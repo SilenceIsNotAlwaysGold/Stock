@@ -38,3 +38,10 @@ class PaperTradingError(AppError):
 
     def __init__(self, message: str):
         super().__init__(message, code="PAPER_TRADING_ERROR")
+
+
+class T1StrategyError(AppError):
+    """T+1 策略异常"""
+
+    def __init__(self, message: str):
+        super().__init__(message, code="T1_STRATEGY_ERROR")

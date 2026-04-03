@@ -90,6 +90,11 @@ async def init_db():
     await r.ping()
     logger.info(f"Redis connected: {settings.REDIS_HOST}:{settings.REDIS_PORT}")
 
+    # Initialize cache helper
+    from app.core.cache import set_redis
+
+    set_redis(r)
+
 
 async def close_db():
     """Close all database connections"""

@@ -48,7 +48,7 @@ services:
       POSTGRES_DB: quant_v8
       TZ: Asia/Shanghai
     ports:
-      - "5432:5432"
+      - "25432:5432"
     volumes:
       - pg_data:/var/lib/postgresql/data
     networks:
@@ -69,7 +69,7 @@ services:
       MONGO_INITDB_DATABASE: quant_v8
       TZ: Asia/Shanghai
     ports:
-      - "27017:27017"
+      - "27019:27017"
     volumes:
       - mongo_data:/data/db
     networks:
@@ -86,7 +86,7 @@ services:
     container_name: quant-v8-redis
     command: redis-server --appendonly yes --requirepass quant123
     ports:
-      - "6379:6379"
+      - "26379:6379"
     volumes:
       - redis_data:/data
     networks:
