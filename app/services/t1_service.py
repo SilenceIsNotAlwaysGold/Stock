@@ -1,5 +1,7 @@
 """
 T+1 隔夜策略核心业务逻辑
+
+v4 版本：使用 T1V4Scorer 多维度评分选股 + SellEngineV2 4 阶段卖出。
 """
 
 import logging
@@ -19,42 +21,22 @@ from app.models.pg_models import (
     DailyBar,
 )
 from app.core.exceptions import T1StrategyError
-from engine.registry import StrategyRegistry
 
 logger = logging.getLogger(__name__)
 
-# T1 策略名称到 criterion 的映射
-STRATEGY_CRITERION_MAP = {
-    "t1_limit_reopen_reseal": "limit_reopen",
-    "t1_tail_surge_volume": "tail_surge",
-    "t1_sector_leader": "sector_leader",
-}
 
-CRITERION_LABELS = {
-    "limit_reopen": "涨停回封",
-    "tail_surge": "尾盘拉升",
-    "sector_leader": "板块龙头",
-}
+async def scan_candidates(
+    db: AsyncSession, scan_date: date, top_n: int = 5
+) -> List[Dict]:
+    """
+    扫描全市场，使用 T1V4Scorer 多维度评分选股，存入 t1_candidates。
 
-
-async def scan_candidates(db: AsyncSession, scan_date: date) -> List[Dict]:
-    """扫描全市场，运行3个T1子策略，存入t1_candidates"""
+    v4 流程：VetoFilter → 5维评分 → 排序 Top-N
+    """
     import pandas as pd
+    from engine.t1_v4.scorer import T1V4Scorer
 
-    # 加载 T1 策略
-    t1_strategies = [
-        cls()
-        for name, cls in StrategyRegistry.all().items()
-        if getattr(cls, "category", "") == "t1_overnight"
-    ]
-
-    if not t1_strategies:
-        StrategyRegistry.auto_discover()
-        t1_strategies = [
-            cls()
-            for name, cls in StrategyRegistry.all().items()
-            if getattr(cls, "category", "") == "t1_overnight"
-        ]
+    scorer = T1V4Scorer(top_n=top_n, market_safe_threshold=0)
 
     # 清除当天已有的 pending 候选（避免重复扫描累积）
     from sqlalchemy import delete as sql_delete
@@ -76,17 +58,20 @@ async def scan_candidates(db: AsyncSession, scan_date: date) -> List[Dict]:
 
     # 获取活跃股票列表（带行业信息）
     result = await db.execute(
-        select(Stock.ts_code, Stock.name, Stock.industry).where(Stock.is_active == True)
+        select(Stock.ts_code, Stock.name, Stock.industry, Stock.list_date).where(
+            Stock.is_active == True
+        )
     )
     stocks = result.all()
-    logger.info(
-        f"T1 scan: {len(stocks)} active stocks, {len(t1_strategies)} strategies"
-    )
+    logger.info(f"T1 v4 scan: {len(stocks)} active stocks")
 
-    # 预计算板块排名：按行业分组，计算每只股票的涨幅，取板块内排名
+    # 预计算板块排名 + 板块涨停数
     sector_ranks = {}
+    total_sectors = 0
+    sector_limit_up_counts = {}
     industry_changes = {}
-    for ts_code, stock_name, industry in stocks:
+
+    for ts_code, stock_name, industry, list_date in stocks:
         bars_result = await db.execute(
             select(DailyBar)
             .where(DailyBar.ts_code == ts_code)
@@ -95,23 +80,43 @@ async def scan_candidates(db: AsyncSession, scan_date: date) -> List[Dict]:
         )
         bars = bars_result.scalars().all()
         if len(bars) >= 2:
-            change = (float(bars[0].close or 0) - float(bars[1].close or 0)) / max(
-                float(bars[1].close or 1), 0.01
-            )
+            prev_close = float(bars[1].close or 1) or 0.01
+            change = (float(bars[0].close or 0) - prev_close) / prev_close
             if industry:
-                industry_changes.setdefault(industry, []).append((ts_code, change))
+                industry_changes.setdefault(industry, []).append(
+                    (ts_code, change)
+                )
+                # 统计涨停
+                if change >= 0.098:
+                    sector_limit_up_counts[industry] = (
+                        sector_limit_up_counts.get(industry, 0) + 1
+                    )
 
-    # 计算每个行业内的排名
+    total_sectors = len(industry_changes)
     for industry, items in industry_changes.items():
         sorted_items = sorted(items, key=lambda x: x[1], reverse=True)
         for rank, (code, _) in enumerate(sorted_items, 1):
             sector_ranks[code] = rank
 
-    candidates = []
-    for ts_code, stock_name, industry in stocks:
-        # 跳过当天已买入的股票
+    # 对行业按整体涨幅排名
+    industry_avg_change = {
+        ind: sum(c for _, c in items) / len(items)
+        for ind, items in industry_changes.items()
+    }
+    sorted_industries = sorted(
+        industry_avg_change.items(), key=lambda x: x[1], reverse=True
+    )
+    industry_rank_map = {ind: i + 1 for i, (ind, _) in enumerate(sorted_industries)}
+
+    # 构建 stock_pool 和 daily_data
+    stock_pool = []
+    daily_data = {}
+    stock_contexts = {}
+
+    for ts_code, stock_name, industry, list_date in stocks:
         if ts_code in bought_codes:
             continue
+
         # 获取最近30天日线数据
         bars_result = await db.execute(
             select(DailyBar)
@@ -123,12 +128,11 @@ async def scan_candidates(db: AsyncSession, scan_date: date) -> List[Dict]:
         if len(bars) < 5:
             continue
 
-        # 转为 DataFrame（按日期正序）
         bars = list(reversed(bars))
         df = pd.DataFrame(
             [
                 {
-                    "trade_date": b.trade_date,
+                    "date": b.trade_date,
                     "open": float(b.open or 0),
                     "high": float(b.high or 0),
                     "low": float(b.low or 0),
@@ -141,46 +145,93 @@ async def scan_candidates(db: AsyncSession, scan_date: date) -> List[Dict]:
             ]
         )
 
-        # 构建 context（含板块排名）
-        ctx = {"sector_rank": sector_ranks.get(ts_code)}
+        stock_pool.append(
+            {
+                "ts_code": ts_code,
+                "name": stock_name,
+                "list_date": str(list_date) if list_date else None,
+            }
+        )
+        daily_data[ts_code] = df
 
-        for strategy in t1_strategies:
-            try:
-                sig = strategy.signal(df, context=ctx)
-                if sig.action == "BUY" and sig.confidence >= 0.5:
-                    criterion = sig.metadata.get(
-                        "criterion",
-                        STRATEGY_CRITERION_MAP.get(strategy.name, strategy.name),
-                    )
-                    candidate = T1Candidate(
-                        scan_date=scan_date,
-                        ts_code=ts_code,
-                        stock_name=stock_name,
-                        criterion=criterion,
-                        score=round(sig.confidence, 3),
-                        close_price=Decimal(str(df.iloc[-1]["close"])),
-                        change_pct=sig.metadata.get("change_pct"),
-                        volume_ratio=sig.metadata.get("volume_ratio"),
-                        turnover_rate=sig.metadata.get("turnover_rate"),
-                        status="pending",
-                        reason=sig.reason,
-                        created_at=datetime.utcnow(),
-                    )
-                    db.add(candidate)
-                    candidates.append(
-                        {
-                            "ts_code": ts_code,
-                            "stock_name": stock_name,
-                            "criterion": criterion,
-                            "score": sig.confidence,
-                            "reason": sig.reason,
-                        }
-                    )
-            except Exception as e:
-                logger.warning(f"T1 strategy {strategy.name} failed on {ts_code}: {e}")
+        # 个股 context
+        last_bar = bars[-1]
+        stock_contexts[ts_code] = {
+            "turnover_rate": float(last_bar.turnover_rate or 0) or None,
+            "sector_rank": industry_rank_map.get(industry),
+            "total_sectors": total_sectors,
+            "sector_limit_up_count": sector_limit_up_counts.get(industry, 0),
+            "is_suspended": False,
+            # 以下字段需要额外数据源支撑，当前给 None 降级
+            "money_flow_df": None,
+            "north_flow_df": None,
+            "fina_df": None,
+            "pe": None,
+            "industry_pe_median": None,
+        }
+
+    # 全局 context（指数、市场统计等）
+    global_context = {
+        "index_df": None,
+        "market_stats": None,
+    }
+
+    logger.info(
+        f"T1 v4 scan: scoring {len(stock_pool)} eligible stocks..."
+    )
+
+    # 调用 T1V4Scorer 评分 + 排序
+    top_scores = scorer.rank_and_select(
+        stock_pool=stock_pool,
+        daily_data=daily_data,
+        context=global_context,
+        stock_contexts=stock_contexts,
+        top_n=top_n,
+    )
+
+    # 写入数据库
+    candidates = []
+    for s in top_scores:
+        last_close = 0.0
+        df = daily_data.get(s.ts_code)
+        if df is not None and not df.empty:
+            last_close = float(df.iloc[-1]["close"])
+
+        candidate = T1Candidate(
+            scan_date=scan_date,
+            ts_code=s.ts_code,
+            stock_name=s.stock_name,
+            criterion="v4_multidim",
+            score=round(s.total_score, 2),
+            tech_score=round(s.tech_score, 2),
+            capital_score=round(s.capital_score, 2),
+            fundamental_score=round(s.fundamental_score, 2),
+            sector_score=round(s.sector_score, 2),
+            market_score=round(s.market_score, 2),
+            score_details=s.details,
+            close_price=Decimal(str(last_close)),
+            status="pending",
+            reason=f"v4综合评分{s.total_score:.1f}分",
+            created_at=datetime.utcnow(),
+        )
+        db.add(candidate)
+        candidates.append(
+            {
+                "ts_code": s.ts_code,
+                "stock_name": s.stock_name,
+                "criterion": "v4_multidim",
+                "score": s.total_score,
+                "tech_score": s.tech_score,
+                "capital_score": s.capital_score,
+                "fundamental_score": s.fundamental_score,
+                "sector_score": s.sector_score,
+                "market_score": s.market_score,
+                "reason": f"v4综合评分{s.total_score:.1f}分",
+            }
+        )
 
     await db.commit()
-    logger.info(f"T1 scan complete: {len(candidates)} candidates found")
+    logger.info(f"T1 v4 scan complete: {len(candidates)} candidates found")
     return candidates
 
 
@@ -269,13 +320,17 @@ async def execute_morning_sell(
 
 
 async def check_and_sell_positions(db: AsyncSession) -> List[Dict]:
-    """早盘自动卖出检查（由定时任务调用）"""
+    """早盘自动卖出检查（由定时任务调用），使用 SellEngineV2 4 阶段决策"""
+    from engine.t1_v4.sell_engine_v2 import SellEngineV2
+
+    sell_engine = SellEngineV2()
+
     result = await db.execute(select(T1Position).where(T1Position.status == "holding"))
     positions = result.scalars().all()
     results = []
 
     for pos in positions:
-        # 获取今日最新价格
+        # 获取今日日线数据
         bar_result = await db.execute(
             select(DailyBar).where(
                 and_(
@@ -289,28 +344,27 @@ async def check_and_sell_positions(db: AsyncSession) -> List[Dict]:
             continue
 
         buy_price = float(pos.buy_price)
-        open_price = float(bar.open or 0)
-        current_price = float(bar.close or bar.open or 0)
+        next_open = float(bar.open or 0)
+        next_high = float(bar.high or 0)
+        next_low = float(bar.low or 0)
+        next_close = float(bar.close or bar.open or 0)
 
-        # 分档卖出规则
-        if open_price >= buy_price * 1.05:
-            sell_result = await execute_morning_sell(
-                db, pos.id, open_price, "take_profit"
-            )
-            results.append(sell_result)
-        elif current_price <= buy_price * 0.97:
-            sell_result = await execute_morning_sell(
-                db, pos.id, current_price, "stop_loss"
-            )
-            results.append(sell_result)
-        else:
-            # 10:30 超时卖出（由定时任务在10:30触发时执行）
-            high_pct = (float(bar.high or 0) - buy_price) / buy_price
-            if high_pct < 0.098:  # 未涨停
-                sell_result = await execute_morning_sell(
-                    db, pos.id, current_price, "timeout_sell"
-                )
-                results.append(sell_result)
+        if next_open <= 0:
+            continue
+
+        # 用 SellEngineV2 做决策
+        decision = sell_engine.decide(
+            buy_price=buy_price,
+            next_open=next_open,
+            next_high=next_high,
+            next_low=next_low,
+            next_close=next_close,
+        )
+
+        sell_result = await execute_morning_sell(
+            db, pos.id, decision.sell_price, decision.sell_reason
+        )
+        results.append(sell_result)
 
     return results
 

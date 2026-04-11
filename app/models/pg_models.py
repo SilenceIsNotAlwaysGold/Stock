@@ -383,7 +383,26 @@ class T1Candidate(Base):
         nullable=False,
         comment="选股条件: limit_reopen/tail_surge/sector_leader",
     )
-    score: Mapped[float] = mapped_column(Float, nullable=False, comment="评分 0-1")
+    score: Mapped[float] = mapped_column(Float, nullable=False, comment="综合评分 0-100")
+    # v4 多维度评分明细
+    tech_score: Mapped[Optional[float]] = mapped_column(
+        Float, comment="技术面评分 0-30"
+    )
+    capital_score: Mapped[Optional[float]] = mapped_column(
+        Float, comment="资金面评分 0-25"
+    )
+    fundamental_score: Mapped[Optional[float]] = mapped_column(
+        Float, comment="基本面评分 0-15"
+    )
+    sector_score: Mapped[Optional[float]] = mapped_column(
+        Float, comment="板块面评分 0-15"
+    )
+    market_score: Mapped[Optional[float]] = mapped_column(
+        Float, comment="市场面评分 0-15"
+    )
+    score_details: Mapped[Optional[dict]] = mapped_column(
+        JSON, comment="评分子项明细"
+    )
     close_price: Mapped[Optional[Decimal]] = mapped_column(
         Numeric(20, 4), comment="收盘价"
     )
