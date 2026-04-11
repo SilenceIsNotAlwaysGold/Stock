@@ -81,7 +81,7 @@ export const t1Api = {
   candidates: (scan_date = '', criterion = '') =>
     get<ListResponse<T1Candidate>>('/t1/candidates', { scan_date, criterion }),
   scan: (scan_date = '') =>
-    post<T1ScanResponse>(`/t1/scan?scan_date=${scan_date}`),
+    post<T1ScanResponse>(scan_date ? `/t1/scan?scan_date=${scan_date}` : '/t1/scan'),
   buy: (candidate_id: number, quantity = 100) =>
     post<T1BuyResponse>('/t1/buy', { candidate_id, quantity }),
   sell: (positionId: number, sell_price: number, sell_reason = 'manual') =>

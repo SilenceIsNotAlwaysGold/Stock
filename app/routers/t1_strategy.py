@@ -67,9 +67,13 @@ async def trigger_scan(
     db: AsyncSession = Depends(get_db),
 ):
     """手动触发扫描"""
+    import uuid
+
     target_date = date.fromisoformat(scan_date) if scan_date else date.today()
-    candidates = await t1_service.scan_candidates(db, target_date)
+    task_id = f"t1_scan_{uuid.uuid4().hex[:8]}"
+    candidates = await t1_service.scan_candidates(db, target_date, task_id=task_id)
     return {
+        "task_id": task_id,
         "scan_date": str(target_date),
         "found": len(candidates),
         "candidates": candidates,

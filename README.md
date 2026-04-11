@@ -25,6 +25,12 @@
 - 多策略信号聚合与共振检测
 - 策略健康度评估与分级
 
+### T1 v4 多维度评分选股
+- 5 维连续评分模型（技术30/资金25/基本面15/板块15/市场15，满分100）
+- 一票否决过滤器（7条规则）
+- SellEngineV2 四阶段卖出决策
+- Walk-forward 验证 + 多样本稳定性测试 + 参数敏感性分析
+
 ### 回测与模拟盘
 - 历史数据回测（收益率/最大回撤/胜率/夏普比率）
 - 模拟盘交易（买入/卖出/持仓管理/手续费计算）
@@ -88,6 +94,9 @@ cp .env.example .env
 
 # 3. 初始化数据库
 alembic upgrade head
+
+# 3.5 初始化回测数据（可选，需要 Tushare Token）
+python scripts/data_init.py --token YOUR_TOKEN
 
 # 4. 启动后端
 uvicorn app.main:app --reload --port 8000

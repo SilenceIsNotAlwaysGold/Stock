@@ -26,15 +26,20 @@ logger = logging.getLogger(__name__)
 
 
 async def scan_candidates(
-    db: AsyncSession, scan_date: date, top_n: int = 5
+    db: AsyncSession, scan_date: date, top_n: int = 5, task_id: Optional[str] = None
 ) -> List[Dict]:
     """
     扫描全市场，使用 T1V4Scorer 多维度评分选股，存入 t1_candidates。
 
     v4 流程：VetoFilter → 5维评分 → 排序 Top-N
     """
+    import uuid
     import pandas as pd
     from engine.t1_v4.scorer import T1V4Scorer
+    from app.core.progress import create_task, update_progress, complete_task, fail_task
+
+    if task_id is None:
+        task_id = f"t1_scan_{scan_date}_{uuid.uuid4().hex[:8]}"
 
     scorer = T1V4Scorer(top_n=top_n, market_safe_threshold=0)
 
@@ -65,174 +70,186 @@ async def scan_candidates(
     stocks = result.all()
     logger.info(f"T1 v4 scan: {len(stocks)} active stocks")
 
-    # 预计算板块排名 + 板块涨停数
-    sector_ranks = {}
-    total_sectors = 0
-    sector_limit_up_counts = {}
-    industry_changes = {}
+    create_task(task_id, total=len(stocks))
 
-    for ts_code, stock_name, industry, list_date in stocks:
-        bars_result = await db.execute(
-            select(DailyBar)
-            .where(DailyBar.ts_code == ts_code)
-            .order_by(DailyBar.trade_date.desc())
-            .limit(2)
-        )
-        bars = bars_result.scalars().all()
-        if len(bars) >= 2:
-            prev_close = float(bars[1].close or 1) or 0.01
-            change = (float(bars[0].close or 0) - prev_close) / prev_close
-            if industry:
-                industry_changes.setdefault(industry, []).append(
-                    (ts_code, change)
-                )
-                # 统计涨停
-                if change >= 0.098:
-                    sector_limit_up_counts[industry] = (
-                        sector_limit_up_counts.get(industry, 0) + 1
+    try:
+        # 预计算板块排名 + 板块涨停数
+        sector_ranks = {}
+        total_sectors = 0
+        sector_limit_up_counts = {}
+        industry_changes = {}
+
+        for i, (ts_code, stock_name, industry, list_date) in enumerate(stocks):
+            bars_result = await db.execute(
+                select(DailyBar)
+                .where(DailyBar.ts_code == ts_code)
+                .order_by(DailyBar.trade_date.desc())
+                .limit(2)
+            )
+            bars = bars_result.scalars().all()
+            if len(bars) >= 2:
+                prev_close = float(bars[1].close or 1) or 0.01
+                change = (float(bars[0].close or 0) - prev_close) / prev_close
+                if industry:
+                    industry_changes.setdefault(industry, []).append(
+                        (ts_code, change)
                     )
+                    # 统计涨停
+                    if change >= 0.098:
+                        sector_limit_up_counts[industry] = (
+                            sector_limit_up_counts.get(industry, 0) + 1
+                        )
 
-    total_sectors = len(industry_changes)
-    for industry, items in industry_changes.items():
-        sorted_items = sorted(items, key=lambda x: x[1], reverse=True)
-        for rank, (code, _) in enumerate(sorted_items, 1):
-            sector_ranks[code] = rank
+            if i % 50 == 0:
+                update_progress(task_id, current=i, message=f"处理中 {i}/{len(stocks)}")
 
-    # 对行业按整体涨幅排名
-    industry_avg_change = {
-        ind: sum(c for _, c in items) / len(items)
-        for ind, items in industry_changes.items()
-    }
-    sorted_industries = sorted(
-        industry_avg_change.items(), key=lambda x: x[1], reverse=True
-    )
-    industry_rank_map = {ind: i + 1 for i, (ind, _) in enumerate(sorted_industries)}
+        total_sectors = len(industry_changes)
+        for industry, items in industry_changes.items():
+            sorted_items = sorted(items, key=lambda x: x[1], reverse=True)
+            for rank, (code, _) in enumerate(sorted_items, 1):
+                sector_ranks[code] = rank
 
-    # 构建 stock_pool 和 daily_data
-    stock_pool = []
-    daily_data = {}
-    stock_contexts = {}
-
-    for ts_code, stock_name, industry, list_date in stocks:
-        if ts_code in bought_codes:
-            continue
-
-        # 获取最近30天日线数据
-        bars_result = await db.execute(
-            select(DailyBar)
-            .where(DailyBar.ts_code == ts_code)
-            .order_by(DailyBar.trade_date.desc())
-            .limit(30)
+        # 对行业按整体涨幅排名
+        industry_avg_change = {
+            ind: sum(c for _, c in items) / len(items)
+            for ind, items in industry_changes.items()
+        }
+        sorted_industries = sorted(
+            industry_avg_change.items(), key=lambda x: x[1], reverse=True
         )
-        bars = bars_result.scalars().all()
-        if len(bars) < 5:
-            continue
+        industry_rank_map = {ind: i + 1 for i, (ind, _) in enumerate(sorted_industries)}
 
-        bars = list(reversed(bars))
-        df = pd.DataFrame(
-            [
+        # 构建 stock_pool 和 daily_data
+        stock_pool = []
+        daily_data = {}
+        stock_contexts = {}
+
+        for ts_code, stock_name, industry, list_date in stocks:
+            if ts_code in bought_codes:
+                continue
+
+            # 获取最近30天日线数据
+            bars_result = await db.execute(
+                select(DailyBar)
+                .where(DailyBar.ts_code == ts_code)
+                .order_by(DailyBar.trade_date.desc())
+                .limit(30)
+            )
+            bars = bars_result.scalars().all()
+            if len(bars) < 5:
+                continue
+
+            bars = list(reversed(bars))
+            df = pd.DataFrame(
+                [
+                    {
+                        "date": b.trade_date,
+                        "open": float(b.open or 0),
+                        "high": float(b.high or 0),
+                        "low": float(b.low or 0),
+                        "close": float(b.close or 0),
+                        "volume": b.volume or 0,
+                        "amount": float(b.amount or 0),
+                        "turnover_rate": b.turnover_rate or 0,
+                    }
+                    for b in bars
+                ]
+            )
+
+            stock_pool.append(
                 {
-                    "date": b.trade_date,
-                    "open": float(b.open or 0),
-                    "high": float(b.high or 0),
-                    "low": float(b.low or 0),
-                    "close": float(b.close or 0),
-                    "volume": b.volume or 0,
-                    "amount": float(b.amount or 0),
-                    "turnover_rate": b.turnover_rate or 0,
+                    "ts_code": ts_code,
+                    "name": stock_name,
+                    "list_date": str(list_date) if list_date else None,
                 }
-                for b in bars
-            ]
-        )
+            )
+            daily_data[ts_code] = df
 
-        stock_pool.append(
-            {
-                "ts_code": ts_code,
-                "name": stock_name,
-                "list_date": str(list_date) if list_date else None,
+            # 个股 context
+            last_bar = bars[-1]
+            stock_contexts[ts_code] = {
+                "turnover_rate": float(last_bar.turnover_rate or 0) or None,
+                "sector_rank": industry_rank_map.get(industry),
+                "total_sectors": total_sectors,
+                "sector_limit_up_count": sector_limit_up_counts.get(industry, 0),
+                "is_suspended": False,
+                # 以下字段需要额外数据源支撑，当前给 None 降级
+                "money_flow_df": None,
+                "north_flow_df": None,
+                "fina_df": None,
+                "pe": None,
+                "industry_pe_median": None,
             }
-        )
-        daily_data[ts_code] = df
 
-        # 个股 context
-        last_bar = bars[-1]
-        stock_contexts[ts_code] = {
-            "turnover_rate": float(last_bar.turnover_rate or 0) or None,
-            "sector_rank": industry_rank_map.get(industry),
-            "total_sectors": total_sectors,
-            "sector_limit_up_count": sector_limit_up_counts.get(industry, 0),
-            "is_suspended": False,
-            # 以下字段需要额外数据源支撑，当前给 None 降级
-            "money_flow_df": None,
-            "north_flow_df": None,
-            "fina_df": None,
-            "pe": None,
-            "industry_pe_median": None,
+        # 全局 context（指数、市场统计等）
+        global_context = {
+            "index_df": None,
+            "market_stats": None,
         }
 
-    # 全局 context（指数、市场统计等）
-    global_context = {
-        "index_df": None,
-        "market_stats": None,
-    }
-
-    logger.info(
-        f"T1 v4 scan: scoring {len(stock_pool)} eligible stocks..."
-    )
-
-    # 调用 T1V4Scorer 评分 + 排序
-    top_scores = scorer.rank_and_select(
-        stock_pool=stock_pool,
-        daily_data=daily_data,
-        context=global_context,
-        stock_contexts=stock_contexts,
-        top_n=top_n,
-    )
-
-    # 写入数据库
-    candidates = []
-    for s in top_scores:
-        last_close = 0.0
-        df = daily_data.get(s.ts_code)
-        if df is not None and not df.empty:
-            last_close = float(df.iloc[-1]["close"])
-
-        candidate = T1Candidate(
-            scan_date=scan_date,
-            ts_code=s.ts_code,
-            stock_name=s.stock_name,
-            criterion="v4_multidim",
-            score=round(s.total_score, 2),
-            tech_score=round(s.tech_score, 2),
-            capital_score=round(s.capital_score, 2),
-            fundamental_score=round(s.fundamental_score, 2),
-            sector_score=round(s.sector_score, 2),
-            market_score=round(s.market_score, 2),
-            score_details=s.details,
-            close_price=Decimal(str(last_close)),
-            status="pending",
-            reason=f"v4综合评分{s.total_score:.1f}分",
-            created_at=datetime.utcnow(),
-        )
-        db.add(candidate)
-        candidates.append(
-            {
-                "ts_code": s.ts_code,
-                "stock_name": s.stock_name,
-                "criterion": "v4_multidim",
-                "score": s.total_score,
-                "tech_score": s.tech_score,
-                "capital_score": s.capital_score,
-                "fundamental_score": s.fundamental_score,
-                "sector_score": s.sector_score,
-                "market_score": s.market_score,
-                "reason": f"v4综合评分{s.total_score:.1f}分",
-            }
+        update_progress(task_id, current=len(stocks), message="评分排序中...")
+        logger.info(
+            f"T1 v4 scan: scoring {len(stock_pool)} eligible stocks..."
         )
 
-    await db.commit()
-    logger.info(f"T1 v4 scan complete: {len(candidates)} candidates found")
-    return candidates
+        # 调用 T1V4Scorer 评分 + 排序
+        top_scores = scorer.rank_and_select(
+            stock_pool=stock_pool,
+            daily_data=daily_data,
+            context=global_context,
+            stock_contexts=stock_contexts,
+            top_n=top_n,
+        )
+
+        # 写入数据库
+        candidates = []
+        for s in top_scores:
+            last_close = 0.0
+            df = daily_data.get(s.ts_code)
+            if df is not None and not df.empty:
+                last_close = float(df.iloc[-1]["close"])
+
+            candidate = T1Candidate(
+                scan_date=scan_date,
+                ts_code=s.ts_code,
+                stock_name=s.stock_name,
+                criterion="v4_multidim",
+                score=round(s.total_score, 2),
+                tech_score=round(s.tech_score, 2),
+                capital_score=round(s.capital_score, 2),
+                fundamental_score=round(s.fundamental_score, 2),
+                sector_score=round(s.sector_score, 2),
+                market_score=round(s.market_score, 2),
+                score_details=s.details,
+                close_price=Decimal(str(last_close)),
+                status="pending",
+                reason=f"v4综合评分{s.total_score:.1f}分",
+                created_at=datetime.utcnow(),
+            )
+            db.add(candidate)
+            candidates.append(
+                {
+                    "ts_code": s.ts_code,
+                    "stock_name": s.stock_name,
+                    "criterion": "v4_multidim",
+                    "score": s.total_score,
+                    "tech_score": s.tech_score,
+                    "capital_score": s.capital_score,
+                    "fundamental_score": s.fundamental_score,
+                    "sector_score": s.sector_score,
+                    "market_score": s.market_score,
+                    "reason": f"v4综合评分{s.total_score:.1f}分",
+                }
+            )
+
+        await db.commit()
+        logger.info(f"T1 v4 scan complete: {len(candidates)} candidates found")
+        complete_task(task_id, message=f"完成，{len(candidates)} 只候选")
+        return candidates
+
+    except Exception as e:
+        fail_task(task_id, str(e))
+        raise
 
 
 async def execute_buy(db: AsyncSession, candidate_id: int, quantity: int = 100) -> Dict:

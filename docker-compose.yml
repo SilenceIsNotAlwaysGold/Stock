@@ -15,6 +15,9 @@ services:
       MONGO_HOST: mongodb
       REDIS_HOST: redis
       TZ: Asia/Shanghai
+      T1_STRATEGY_TOP_N: "5"
+      T1_MARKET_SAFE_THRESHOLD: "8.0"
+      T1_MIN_TOTAL_SCORE: "50.0"
     depends_on:
       postgres:
         condition: service_healthy

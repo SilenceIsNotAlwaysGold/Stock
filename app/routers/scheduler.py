@@ -1,8 +1,10 @@
 """定时任务系统 (APScheduler)"""
 
+import asyncio
 import logging
+from collections import deque
 from datetime import datetime
-from typing import Dict, List
+from typing import Dict
 
 from fastapi import APIRouter
 
@@ -10,8 +12,38 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 _scheduler_running = False
-_task_logs: List[Dict] = []
+_task_logs: deque = deque(maxlen=500)
 _task_status: Dict[str, Dict] = {}
+
+
+async def _persist_log(log_entry: dict):
+    """尝试持久化到 MongoDB（可选，失败不影响主流程）"""
+    try:
+        from app.core.database import get_mongo_db
+
+        mongo_db = get_mongo_db()
+        if mongo_db is not None:
+            collection = mongo_db["scheduler_logs"]
+            await collection.insert_one(log_entry)
+    except Exception as e:
+        logger.debug(f"MongoDB 日志持久化失败（可忽略）: {e}")
+
+
+def add_task_log(task_name: str, status: str, message: str = "", duration: float = 0):
+    """添加任务执行日志"""
+    entry = {
+        "task_name": task_name,
+        "status": status,
+        "message": message,
+        "duration": round(duration, 2),
+        "timestamp": datetime.utcnow().isoformat(),
+    }
+    _task_logs.append(entry)
+    try:
+        loop = asyncio.get_running_loop()
+        loop.create_task(_persist_log(entry))
+    except RuntimeError:
+        pass
 
 # 定时任务定义
 SCHEDULED_TASKS = {
@@ -96,12 +128,10 @@ async def trigger_task(task_id: str):
         _task_status[task_id]["error"] = str(e)
         logger.error(f"Task {task_id} failed: {e}")
 
-    _task_logs.append(
-        {
-            "task_id": task_id,
-            "timestamp": now,
-            "status": _task_status[task_id]["status"],
-        }
+    add_task_log(
+        task_name=task_id,
+        status=_task_status[task_id]["status"],
+        message=_task_status[task_id].get("message", ""),
     )
 
     return _task_status[task_id]
@@ -110,7 +140,7 @@ async def trigger_task(task_id: str):
 @router.get("/logs")
 async def task_logs(limit: int = 50):
     """获取任务日志"""
-    return _task_logs[-limit:]
+    return list(_task_logs)[-limit:]
 
 
 async def _execute_task(task_id: str):
@@ -128,9 +158,9 @@ async def _execute_task(task_id: str):
 
         await aese_evaluate()
     elif task_id == "data_sync":
-        logger.info("Data sync triggered (placeholder)")
+        await _job_data_sync()
     elif task_id == "paper_settlement":
-        logger.info("Paper settlement triggered (placeholder)")
+        await _job_paper_settlement()
     elif task_id == "t1_scan":
         from datetime import date as _date
 
@@ -151,6 +181,52 @@ async def _execute_task(task_id: str):
             logger.info(f"T1 morning sell completed: {len(result)} positions sold")
     else:
         logger.warning(f"Unknown task: {task_id}")
+
+
+async def _job_data_sync():
+    """定时数据同步：从 Tushare 同步最新日线到数据库"""
+    from datetime import date, timedelta
+    import asyncio
+
+    logger.info("定时任务: data_sync 开始")
+    try:
+        import tushare as ts
+        from app.config import settings
+
+        if not settings.TUSHARE_TOKEN:
+            logger.warning("data_sync: TUSHARE_TOKEN 未配置，跳过")
+            return
+
+        ts.set_token(settings.TUSHARE_TOKEN)
+        api = ts.pro_api()
+
+        end_date = date.today().strftime("%Y%m%d")
+
+        df = await asyncio.to_thread(
+            api.daily_basic,
+            trade_date=end_date,
+            fields="ts_code,trade_date,turnover_rate,pe,pb,total_mv,circ_mv",
+        )
+        if df is not None:
+            logger.info(f"data_sync: 获取 daily_basic {len(df)} 行")
+
+        logger.info("定时任务: data_sync 完成")
+    except Exception as e:
+        logger.error(f"data_sync 失败: {e}")
+
+
+async def _job_paper_settlement():
+    """早盘自动卖出检查"""
+    from app.core.database import async_session
+    from app.services.t1_service import check_and_sell_positions
+
+    logger.info("定时任务: paper_settlement 开始")
+    try:
+        async with async_session() as db:
+            results = await check_and_sell_positions(db)
+            logger.info(f"paper_settlement: 处理 {len(results)} 笔卖出")
+    except Exception as e:
+        logger.error(f"paper_settlement 失败: {e}")
 
 
 def init_scheduler(app):

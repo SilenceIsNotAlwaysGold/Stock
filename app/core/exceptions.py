@@ -45,3 +45,10 @@ class T1StrategyError(AppError):
 
     def __init__(self, message: str):
         super().__init__(message, code="T1_STRATEGY_ERROR")
+
+
+class DataValidationError(AppError):
+    """数据验证异常"""
+
+    def __init__(self, message: str = "数据格式或内容不符合要求"):
+        super().__init__(message, code="DATA_VALIDATION_ERROR")

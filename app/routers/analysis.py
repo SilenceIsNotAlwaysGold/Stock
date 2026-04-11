@@ -98,6 +98,22 @@ async def get_progress_sse(task_id: str):
     )
 
 
+@router.post("/analyze/{stock_code}")
+async def run_stock_analysis(stock_code: str):
+    """
+    触发多 Agent 分析（技术面/基本面/新闻/情绪 → 多空辩论 → 风控）
+
+    路径参数形式，直接同步等待分析完成后返回结果。
+    run_analysis 内部通过 DataSourceManager 自行获取行情数据。
+    """
+    try:
+        result = await run_analysis(stock_code=stock_code)
+        return result
+    except Exception as e:
+        logger.error(f"Analysis failed for {stock_code}: {e}")
+        return {"error": str(e), "stock_code": stock_code}
+
+
 @router.get("/tasks")
 async def list_tasks():
     """列出所有分析任务"""
