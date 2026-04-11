@@ -198,11 +198,12 @@ def generate_report(trades: list, sell_engine: T1FinalSellEngine):
 
     # 指标分析
     print(f"\n选股指标统计:")
-    print(f"  平均RSI: {df_trades['rsi'].mean():.2f}")
-    print(f"  平均KDJ_K: {df_trades['kdj_k'].mean():.2f}")
-    print(f"  平均换手率: {df_trades['turnover_rate'].mean():.2f}%")
-    print(f"  平均量比: {df_trades['volume_ratio'].mean():.2f}")
-    print(f"  平均上影线: {df_trades['upper_shadow'].mean():.2f}%")
+    if "upper_shadow" in df_trades.columns:
+        print(f"  平均上影线: {df_trades['upper_shadow'].mean():.2f}%")
+    if "prev_day_change" in df_trades.columns:
+        print(f"  平均前日涨幅: {df_trades['prev_day_change'].mean():.2f}%")
+    if "consecutive_up" in df_trades.columns:
+        print(f"  平均连涨天数: {df_trades['consecutive_up'].mean():.2f}")
 
     # 保存详细交易记录
     output_path = project_root / "data" / "backtest_results" / "t1_final_trades.csv"

@@ -143,30 +143,28 @@ def main():
         logger.info(f"  {trade_date}: {len(df)} 条记录")
         time.sleep(API_CALL_INTERVAL)
 
-    # 5. 合并所有数据
+    # 5. 合并所有数据（流式写入，避免内存溢出）
     logger.info("合并全部数据...")
 
-    # 读取所有单日文件（包括之前下载的）
     all_files = sorted(OUTPUT_DIR.glob("daily_*.csv"))
     if all_files:
-        chunks = [pd.read_csv(f) for f in all_files]
-        merged = pd.concat(chunks, ignore_index=True)
+        header_written = False
+        total_rows = 0
 
-        # 标准化列名
-        merged = merged.rename(
-            columns={
-                "trade_date": "date",
-                "vol": "volume",
-            }
-        )
-        merged = merged.sort_values(["ts_code", "date"]).reset_index(drop=True)
+        for f in all_files:
+            chunk = pd.read_csv(f)
+            chunk = chunk.rename(columns={"trade_date": "date", "vol": "volume"})
+            chunk.to_csv(
+                MERGED_FILE,
+                mode="a" if header_written else "w",
+                header=not header_written,
+                index=False,
+                encoding="utf-8-sig",
+            )
+            header_written = True
+            total_rows += len(chunk)
 
-        merged.to_csv(MERGED_FILE, index=False, encoding="utf-8-sig")
-        logger.info(
-            f"合并完成: {len(merged)} 条记录, "
-            f"{merged['ts_code'].nunique()} 只股票, "
-            f"保存至 {MERGED_FILE}"
-        )
+        logger.info(f"合并完成: {total_rows} 条记录, 保存至 {MERGED_FILE}")
     else:
         logger.warning("没有数据文件可合并")
 

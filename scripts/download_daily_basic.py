@@ -51,14 +51,24 @@ def main():
 
     # 按日拉取 daily_basic
     flush_print("\n[2/2] 按日拉取 daily_basic ...")
-    all_dfs = []
     fields = "ts_code,trade_date,turnover_rate,turnover_rate_f,volume_ratio,pe_ttm,pb,total_mv,circ_mv,total_share,float_share,free_share"
+
+    OUTPUT_FILE.parent.mkdir(parents=True, exist_ok=True)
+    header_written = False
+    total_rows = 0
 
     for idx, date in enumerate(trade_dates):
         try:
             df = pro.daily_basic(trade_date=date, fields=fields)
             if df is not None and not df.empty:
-                all_dfs.append(df)
+                df.to_csv(
+                    OUTPUT_FILE,
+                    mode="a" if header_written else "w",
+                    header=not header_written,
+                    index=False,
+                )
+                header_written = True
+                total_rows += len(df)
         except Exception as e:
             flush_print(f"  {date} 失败: {e}")
             time.sleep(1)
@@ -71,16 +81,11 @@ def main():
         if (idx + 1) % 80 == 0:
             time.sleep(1)  # tushare 限频
 
-    if not all_dfs:
+    if total_rows == 0:
         flush_print("  无数据！")
         return
 
-    result = pd.concat(all_dfs, ignore_index=True)
-    flush_print(f"\n  总记录: {len(result):,} 行, {result['ts_code'].nunique()} 只股票")
-
-    # 保存
-    OUTPUT_FILE.parent.mkdir(parents=True, exist_ok=True)
-    result.to_csv(OUTPUT_FILE, index=False)
+    flush_print(f"\n  总记录: {total_rows:,} 行")
     flush_print(f"  已保存: {OUTPUT_FILE}")
     flush_print(f"  文件大小: {OUTPUT_FILE.stat().st_size / 1024 / 1024:.1f} MB")
     flush_print("\n完成!")

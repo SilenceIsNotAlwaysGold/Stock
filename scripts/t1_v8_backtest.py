@@ -1,36 +1,31 @@
 """
-T1 v6 策略回测脚本
+T1 v8 组合策略回测
 
-测试：低位反弹 + 优化止损
+V8 = G12因子 + 量价确认 + 优化卖出
 """
 
 import sys
 import pandas as pd
 import numpy as np
 from pathlib import Path
-from datetime import datetime, timedelta
 
-# 添加项目根目录到路径
 project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
 
-from engine.strategies.t1_v7 import T1V7PriceAction
-from engine.t1_v7_sell import T1V7SellEngine
+from engine.strategies.t1_v8_combined import T1V8Combined
+from engine.t1_v8_sell import T1V8SellEngine
 
 
 def load_data():
     """加载数据"""
     print("加载数据...")
 
-    # 日线数据
     daily_path = project_root / "data" / "yearly" / "all_stocks_daily.csv"
     daily_df = pd.read_csv(daily_path)
 
-    # daily_basic数据
     basic_path = project_root / "data" / "yearly" / "daily_basic.csv"
     basic_df = pd.read_csv(basic_path)
 
-    # 合并数据
     df = pd.merge(
         daily_df,
         basic_df[["ts_code", "trade_date", "turnover_rate", "volume_ratio", "circ_mv"]],
@@ -39,45 +34,31 @@ def load_data():
         how="left",
     )
 
-    # 删除重复列
     df = df.drop(columns=["trade_date"])
-
-    # 填充缺失值
     df["turnover_rate"] = df["turnover_rate"].fillna(0)
     df["volume_ratio"] = df["volume_ratio"].fillna(1.0)
     df["circ_mv"] = df["circ_mv"].fillna(0)
 
     print(f"数据加载完成: {len(df)}行, {df['ts_code'].nunique()}只股票")
-
     return df
 
 
 def run_backtest(
-    df: pd.DataFrame, start_date: str, end_date: str, sample_size: int = 1000
+    df: pd.DataFrame, start_date: str, end_date: str, sample_size: int = 2000
 ):
-    """
-    运行回测
-
-    Args:
-        df: 完整数据
-        start_date: 开始日期 (YYYYMMDD)
-        end_date: 结束日期 (YYYYMMDD)
-        sample_size: 样本股票数量
-    """
     print(f"\n{'='*60}")
-    print(f"回测配置:")
+    print(f"T1 V8 组合策略回测")
     print(f"  时间区间: {start_date} ~ {end_date}")
     print(f"  样本数量: {sample_size}只股票")
     print(f"{'='*60}\n")
 
-    # 随机抽样股票
+    # 随机抽样
     all_stocks = df["ts_code"].unique()
     np.random.seed(42)
     sample_stocks = np.random.choice(
         all_stocks, size=min(sample_size, len(all_stocks)), replace=False
     )
 
-    # 过滤数据
     df_sample = df[df["ts_code"].isin(sample_stocks)].copy()
     df_sample = df_sample[
         (df_sample["date"] >= int(start_date)) & (df_sample["date"] <= int(end_date))
@@ -85,33 +66,29 @@ def run_backtest(
 
     print(f"实际样本: {df_sample['ts_code'].nunique()}只股票, {len(df_sample)}行数据\n")
 
-    # 初始化策略和卖出引擎
-    strategy = T1V7PriceAction()
-    sell_engine = T1V7SellEngine()
+    strategy = T1V8Combined()
+    sell_engine = T1V8SellEngine()
 
-    # 获取所有交易日
     trading_days = sorted(df_sample["date"].unique())
 
-    # 回测循环
     all_trades = []
-    positions = []  # 当前持仓
+    positions = []
 
-    for i, current_date in enumerate(trading_days[:-1]):  # 最后一天不买入
-        # 获取当日数据
-        today_data = df_sample[df_sample["date"] == current_date]
-
+    for i, current_date in enumerate(trading_days[:-1]):
         # 生成买入信号
         signals = strategy.generate_signals(
             df_sample[df_sample["date"] <= current_date]
         )
 
-        # 过滤当日信号
         today_signals = [s for s in signals if s["date"] == current_date]
 
         if today_signals:
-            print(f"{current_date}: 买入信号 {len(today_signals)}只")
+            # 按量比排序，取前5只（集中火力）
+            today_signals.sort(key=lambda x: x["indicators"].get("volume_ratio", 0), reverse=True)
+            today_signals = today_signals[:5]
 
-            # 记录买入
+            print(f"{current_date}: 买入 {len(today_signals)}只 (共筛出{len([s for s in signals if s['date'] == current_date])}只)")
+
             for signal in today_signals:
                 positions.append(
                     {
@@ -122,22 +99,18 @@ def run_backtest(
                     }
                 )
 
-        # 处理卖出（次日）
+        # 处理卖出
         if positions:
             next_date = trading_days[i + 1]
             next_data = df_sample[df_sample["date"] == next_date]
 
-            # 决定卖出
             sell_decisions = sell_engine.batch_decide_sell(positions, next_data)
 
-            # 记录交易
             for decision in sell_decisions:
                 if decision["sell_type"] != "suspended":
-                    # 找到对应的买入记录
                     position = next(
                         p for p in positions if p["ts_code"] == decision["ts_code"]
                     )
-
                     all_trades.append(
                         {
                             "ts_code": decision["ts_code"],
@@ -152,15 +125,12 @@ def run_backtest(
                         }
                     )
 
-            # 清空持仓
             positions = []
 
-    # 生成回测报告
     generate_report(all_trades, sell_engine)
 
 
-def generate_report(trades: list, sell_engine: T1V7SellEngine):
-    """生成回测报告"""
+def generate_report(trades: list, sell_engine: T1V8SellEngine):
     if not trades:
         print("无交易记录")
         return
@@ -168,15 +138,21 @@ def generate_report(trades: list, sell_engine: T1V7SellEngine):
     df_trades = pd.DataFrame(trades)
 
     print(f"\n{'='*60}")
-    print("T1 v6 策略回测报告")
+    print("T1 V8 组合策略回测报告")
     print(f"{'='*60}\n")
 
-    # 基础统计
     total_trades = len(df_trades)
     wins = df_trades["win"].sum()
     win_rate = wins / total_trades * 100
     avg_profit = df_trades["profit_pct"].mean()
     total_return = df_trades["profit_pct"].sum()
+    max_drawdown = df_trades["profit_pct"].min()
+
+    # 夏普比率（简化）
+    if df_trades["profit_pct"].std() > 0:
+        sharpe = df_trades["profit_pct"].mean() / df_trades["profit_pct"].std() * np.sqrt(252)
+    else:
+        sharpe = 0
 
     print(f"交易统计:")
     print(f"  总交易次数: {total_trades}")
@@ -185,10 +161,11 @@ def generate_report(trades: list, sell_engine: T1V7SellEngine):
     print(f"  胜率: {win_rate:.2f}%")
     print(f"  平均收益: {avg_profit:.3f}%")
     print(f"  累计收益: {total_return:.2f}%")
+    print(f"  最大单笔亏损: {max_drawdown:.2f}%")
+    print(f"  夏普比率: {sharpe:.2f}")
 
     # 卖出类型统计
     sell_stats = sell_engine.get_statistics(trades)
-
     print(f"\n卖出类型分布:")
     for sell_type, stats in sell_stats["by_type"].items():
         print(f"  {sell_type}:")
@@ -196,29 +173,26 @@ def generate_report(trades: list, sell_engine: T1V7SellEngine):
         print(f"    胜率: {stats['win_rate']:.2f}%")
         print(f"    平均收益: {stats['avg_profit']:.3f}%")
 
-    # 指标分析
-    print(f"\n选股指标统计:")
-    if "turnover_rate" in df_trades.columns:
-        print(f"  平均换手率: {df_trades['turnover_rate'].mean():.2f}%")
-    if "volume_ratio" in df_trades.columns:
-        print(f"  平均量比: {df_trades['volume_ratio'].mean():.2f}")
-    if "upper_shadow" in df_trades.columns:
-        print(f"  平均上影线: {df_trades['upper_shadow'].mean():.2f}%")
-    if "today_change" in df_trades.columns:
-        print(f"  平均涨幅: {df_trades['today_change'].mean():.2f}%")
-    if "decline_3d" in df_trades.columns:
-        print(f"  平均3日跌幅: {df_trades['decline_3d'].mean():.2f}%")
+    # 月度统计
+    df_trades["month"] = df_trades["buy_date"].astype(str).str[:6]
+    monthly = df_trades.groupby("month").agg(
+        trades=("profit_pct", "count"),
+        win_rate=("win", "mean"),
+        avg_pnl=("profit_pct", "mean"),
+        total_pnl=("profit_pct", "sum"),
+    ).round(3)
+    print(f"\n月度统计:")
+    for month, row in monthly.iterrows():
+        pnl_icon = "+" if row["total_pnl"] > 0 else ""
+        print(f"  {month}: {row['trades']}笔, 胜率{row['win_rate']*100:.0f}%, 累计{pnl_icon}{row['total_pnl']:.2f}%")
 
-    # 保存详细交易记录
-    output_path = project_root / "data" / "backtest_results" / "t1_v7_trades.csv"
+    # 保存
+    output_path = project_root / "data" / "backtest_results" / "t1_v8_trades.csv"
     output_path.parent.mkdir(parents=True, exist_ok=True)
     df_trades.to_csv(output_path, index=False, encoding="utf-8-sig")
     print(f"\n详细交易记录已保存: {output_path}")
 
 
 if __name__ == "__main__":
-    # 加载数据
     df = load_data()
-
-    # 运行回测
-    run_backtest(df=df, start_date="20250225", end_date="20260225", sample_size=1000)
+    run_backtest(df=df, start_date="20250411", end_date="20260411", sample_size=2000)
