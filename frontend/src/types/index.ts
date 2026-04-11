@@ -12,6 +12,12 @@ export interface T1Candidate {
   turnover_rate: number | null
   status: string
   reason: string
+  tech_score?: number
+  capital_score?: number
+  fundamental_score?: number
+  sector_score?: number
+  market_score?: number
+  score_details?: Record<string, number>
 }
 
 export interface T1Position {

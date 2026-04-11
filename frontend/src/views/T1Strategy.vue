@@ -63,6 +63,7 @@
               <el-option label="涨停回封" value="limit_reopen" />
               <el-option label="尾盘拉升" value="tail_surge" />
               <el-option label="板块龙头" value="sector_leader" />
+              <el-option label="v4多维评分" value="v4_multidim" />
             </el-select>
             <span v-if="syncMsg" style="font-size: 12px; color: #909399">{{ syncMsg }}</span>
           </div>
@@ -72,9 +73,36 @@
             <el-table-column prop="criterion" label="条件" width="95">
               <template #default="{ row }"><el-tag :type="criterionTagType(row.criterion)" size="small" effect="dark">{{ criterionLabel(row.criterion) }}</el-tag></template>
             </el-table-column>
-            <el-table-column prop="score" label="评分" width="110" sortable>
+            <el-table-column prop="score" label="综合分" width="80" sortable>
               <template #default="{ row }">
-                <el-progress :percentage="Math.round(row.score * 100)" :stroke-width="14" :text-inside="true" :color="row.score >= 0.8 ? '#67c23a' : row.score >= 0.6 ? '#e6a23c' : '#909399'" style="width: 80px" />
+                <span :style="{ fontWeight: 700, color: row.score >= 70 ? '#67c23a' : row.score >= 50 ? '#e6a23c' : '#909399' }">
+                  {{ row.score?.toFixed(1) }}
+                </span>
+              </template>
+            </el-table-column>
+            <el-table-column label="技术" width="55" sortable prop="tech_score">
+              <template #default="{ row }">
+                <span style="font-size: 12px">{{ row.tech_score?.toFixed(0) ?? '-' }}</span>
+              </template>
+            </el-table-column>
+            <el-table-column label="资金" width="55" sortable prop="capital_score">
+              <template #default="{ row }">
+                <span style="font-size: 12px">{{ row.capital_score?.toFixed(0) ?? '-' }}</span>
+              </template>
+            </el-table-column>
+            <el-table-column label="基本" width="55" sortable prop="fundamental_score">
+              <template #default="{ row }">
+                <span style="font-size: 12px">{{ row.fundamental_score?.toFixed(0) ?? '-' }}</span>
+              </template>
+            </el-table-column>
+            <el-table-column label="板块" width="55" sortable prop="sector_score">
+              <template #default="{ row }">
+                <span style="font-size: 12px">{{ row.sector_score?.toFixed(0) ?? '-' }}</span>
+              </template>
+            </el-table-column>
+            <el-table-column label="市场" width="55" sortable prop="market_score">
+              <template #default="{ row }">
+                <span style="font-size: 12px">{{ row.market_score?.toFixed(0) ?? '-' }}</span>
               </template>
             </el-table-column>
             <el-table-column prop="close_price" label="收盘价" width="85" />
@@ -203,10 +231,30 @@ const pagedCandidates = computed(() => {
   return candidates.value.slice(start, start + candidatePageSize.value)
 })
 
-const CRITERION_LABELS: Record<string, string> = { limit_reopen: '涨停回封', tail_surge: '尾盘拉升', sector_leader: '板块龙头' }
-const SELL_REASON_LABELS: Record<string, string> = { take_profit: '止盈', stop_loss: '止损', timeout_sell: '超时卖出', manual: '手动' }
+const CRITERION_LABELS: Record<string, string> = {
+  limit_reopen: '涨停回封',
+  tail_surge: '尾盘拉升',
+  sector_leader: '板块龙头',
+  v4_multidim: 'v4评分',
+}
+const SELL_REASON_LABELS: Record<string, string> = {
+  phase1_take_profit: '高开止盈',
+  phase1_stop_loss: '低开止损',
+  phase2_take_profit: '盘中止盈',
+  phase2_stop_loss: '盘中止损',
+  phase3_lock_profit: '收盘锁利',
+  phase3_stop_loss: '收盘止损',
+  phase4_timeout: '兜底退出',
+  limit_up_hold: '涨停持有',
+  take_profit: '止盈',
+  stop_loss: '止损',
+  timeout_sell: '超时卖出',
+  manual: '手动',
+}
 function criterionLabel(c: string) { return CRITERION_LABELS[c] || c }
-function criterionTagType(c: string) { return { limit_reopen: 'danger', tail_surge: 'warning', sector_leader: '' }[c] || 'info' }
+function criterionTagType(c: string) {
+  return ({ limit_reopen: 'danger', tail_surge: 'warning', sector_leader: '', v4_multidim: 'success' } as Record<string, string>)[c] || 'info'
+}
 function sellReasonLabel(r: string) { return SELL_REASON_LABELS[r] || r }
 function sellReasonType(r: string) { return { take_profit: 'success', stop_loss: 'danger', timeout_sell: 'warning', manual: 'info' }[r] || '' }
 
@@ -291,7 +339,7 @@ async function doSell(row: T1Position) {
   } catch { /* ElMessageBox 取消 or client.ts 已处理 */ }
 }
 function onTradePageChange(page: number) { loadTrades(page) }
-function candidateRowClass({ row }: { row: T1Candidate }) { return row.score >= 0.8 ? 'high-score-row' : '' }
+function candidateRowClass({ row }: { row: T1Candidate }) { return row.score >= 70 ? 'high-score-row' : '' }
 function onTabChange(tab: string) {
   if (tab === 'candidates') loadCandidates()
   else if (tab === 'positions') loadPositions()

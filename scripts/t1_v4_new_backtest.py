@@ -4,12 +4,13 @@ T1 v4 多维度评分策略 - 完整回测
 
 端到端流程：
 1. 数据加载（本地 CSV 或 Tushare）
-2. 每个交易日：
+2. 预计算全市场辅助数据（板块排名、换手率、指数日线）
+3. 每个交易日：
    a. VetoFilter 过滤
-   b. 5 维评分（仅用技术面，资金面/基本面/板块面/市场面标记为 TODO 待数据支撑）
+   b. 5 维评分（技术面 + 板块面 + 市场面从日线数据计算，资金面/基本面需额外数据源）
    c. 排序选 Top-N
    d. SellEngineV2 模拟次日卖出
-3. 统计输出：胜率/收益率/夏普/最大回撤/月度分布/卖出原因分布
+4. 统计输出：胜率/收益率/夏普/最大回撤/月度分布/卖出原因分布
 """
 
 import sys
@@ -110,10 +111,10 @@ def _fetch_stock_list_from_tushare() -> pd.DataFrame:
 # ---------------------------------------------------------------------------
 
 class V4Backtester:
-    """v4 回测器：技术面评分 + SellEngineV2"""
+    """v4 回测器：多维度评分 + SellEngineV2"""
 
     def __init__(self, config: dict = None):
-        # market_safe_threshold=0：回测中没有市场统计数据，放宽市场面门槛
+        # market_safe_threshold=0：回测中市场数据不全，放宽门槛
         self.scorer = T1V4Scorer(market_safe_threshold=0)
         self.sell_engine = SellEngineV2()
         self.config = {
@@ -123,6 +124,7 @@ class V4Backtester:
             "top_n": 5,           # 每天选几只
             "min_score": 50,      # 最低总分
             "lookback": 60,       # 技术面计算所需的最少历史天数
+            "index_code": "000001.SH",  # 指数代码（用于市场面评分）
             **(config or {}),
         }
 
@@ -166,11 +168,12 @@ class V4Backtester:
             stock_info_map[code] = {
                 "name": str(row.get("name", "")),
                 "list_date": str(row.get("list_date", "")),
+                "industry": str(row.get("industry", "") or ""),
             }
         # 补充 stock_groups 中没有信息的股票（最少给个空 info）
         for code in stock_groups:
             if code not in stock_info_map:
-                stock_info_map[code] = {"name": code, "list_date": ""}
+                stock_info_map[code] = {"name": code, "list_date": "", "industry": ""}
 
         # 3. 获取全部交易日列表（在回测区间内）
         all_dates = sorted(all_daily["date"].unique())
@@ -185,6 +188,41 @@ class V4Backtester:
             random.seed(42)
             eligible_codes = random.sample(eligible_codes, max_stocks)
         flush_print(f"  回测股票数: {len(eligible_codes)}")
+
+        # 4b. 预构建行业映射（从 stock_list 的 industry 列，如果有的话）
+        stock_industry_map: Dict[str, str] = {}
+        if "industry" in stock_list.columns:
+            for _, row in stock_list.iterrows():
+                code = str(row["ts_code"])
+                ind = str(row.get("industry", "") or "")
+                if ind:
+                    stock_industry_map[code] = ind
+
+        # 4c. 预构建指数日线分组（用于市场面评分）
+        index_code = self.config.get("index_code", "000001.SH")
+        index_groups: Dict[str, pd.DataFrame] = {}
+        if index_code in stock_groups:
+            index_groups[index_code] = stock_groups[index_code]
+        else:
+            # 尝试从本地 data 目录加载指数数据
+            idx_file = PROJECT_ROOT / "data" / "index_daily.csv"
+            if idx_file.exists():
+                flush_print(f"  加载指数数据: {idx_file}")
+                idx_df = pd.read_csv(idx_file, dtype={"ts_code": str})
+                rename = {}
+                if "trade_date" in idx_df.columns:
+                    rename["trade_date"] = "date"
+                if "vol" in idx_df.columns:
+                    rename["vol"] = "volume"
+                if rename:
+                    idx_df = idx_df.rename(columns=rename)
+                if "date" in idx_df.columns:
+                    idx_df["date"] = idx_df["date"].astype(str).str.replace("-", "")
+                    idx_df["date"] = pd.to_datetime(idx_df["date"], format="%Y%m%d").dt.strftime("%Y-%m-%d")
+                for col in ["open", "high", "low", "close", "volume"]:
+                    if col in idx_df.columns:
+                        idx_df[col] = pd.to_numeric(idx_df[col], errors="coerce")
+                index_groups[index_code] = idx_df.sort_values("date").reset_index(drop=True)
 
         # 5. 主回测循环
         trades: List[dict] = []
@@ -235,26 +273,40 @@ class V4Backtester:
             if not stock_pool:
                 continue
 
-            # 5b. 简化版 context（目前只有技术面是真实的）
+            # 5b. 计算当日市场数据（板块排名、涨跌统计、指数）
+            day_market = self._compute_daily_market_data(
+                trade_date, stock_groups, eligible_codes, stock_info_map,
+                index_groups, daily_data,
+            )
+
             global_context = {
-                "money_flow_df": None,         # TODO: 接入真实资金流数据
-                "north_flow_df": None,          # TODO: 接入北向资金
-                "index_df": None,               # TODO: 接入指数日线
-                "market_stats": None,           # TODO: 接入市场统计
+                "index_df": day_market.get("index_df"),
+                "market_stats": day_market.get("market_stats"),
+                "north_flow_df": None,  # 需要额外数据源
             }
 
             # 5c. 为每只股票构建个股 context
             stock_contexts: Dict[str, dict] = {}
             for sp in stock_pool:
                 code = sp["ts_code"]
+                df_slice = daily_data.get(code)
+                turnover = None
+                if df_slice is not None and not df_slice.empty and "turnover_rate" in df_slice.columns:
+                    val = df_slice.iloc[-1].get("turnover_rate", 0)
+                    if val and float(val) > 0:
+                        turnover = float(val)
+
                 stock_contexts[code] = {
-                    "turnover_rate": None,             # TODO: 接入 daily_basic
-                    "fina_df": None,                   # TODO: 接入财务数据
-                    "pe": None,                        # TODO: 接入 PE
-                    "industry_pe_median": None,        # TODO: 接入行业 PE
-                    "sector_rank": None,               # TODO: 接入板块排名
-                    "total_sectors": None,             # TODO: 接入板块总数
-                    "sector_limit_up_count": 0,
+                    "turnover_rate": turnover,
+                    "money_flow_df": None,     # 需要 Tushare moneyflow 数据
+                    "fina_df": None,           # 需要 Tushare fina_indicator 数据
+                    "pe": None,                # 需要 daily_basic PE 数据
+                    "industry_pe_median": None,
+                    "sector_rank": day_market["sector_ranks"].get(code),
+                    "total_sectors": day_market.get("total_sectors", 0),
+                    "sector_limit_up_count": day_market["sector_limit_ups"].get(
+                        stock_industry_map.get(code, ""), 0
+                    ),
                     "sector_consecutive_strong_days": 0,
                     "list_date": sp["list_date"],
                     "is_suspended": False,
@@ -354,6 +406,113 @@ class V4Backtester:
             "summary": summary,
             "monthly": monthly_df,
             "sell_reasons": sell_reasons,
+        }
+
+    # ------------------------------------------------------------------
+    # 市场数据计算
+    # ------------------------------------------------------------------
+
+    def _compute_daily_market_data(
+        self,
+        trade_date: str,
+        stock_groups: Dict[str, pd.DataFrame],
+        eligible_codes: list,
+        stock_info_map: Dict[str, dict],
+        index_groups: Dict[str, pd.DataFrame],
+        daily_data: Dict[str, pd.DataFrame],
+    ) -> dict:
+        """
+        计算单个交易日的市场辅助数据：
+        - 板块排名（基于行业内个股涨跌幅排名）
+        - 板块涨停数
+        - 市场涨跌统计
+        - 指数日线切片
+        """
+        # 1. 统计每只股票当日涨跌幅 + 行业分组
+        industry_changes: Dict[str, list] = {}
+        up_count = 0
+        down_count = 0
+        limit_up_count = 0
+        limit_down_count = 0
+
+        for code in eligible_codes:
+            df = stock_groups.get(code)
+            if df is None:
+                continue
+            idx_arr = df.index[df["date"] == trade_date].tolist()
+            if not idx_arr or idx_arr[0] < 1:
+                continue
+            idx = idx_arr[0]
+            prev_close = float(df.iloc[idx - 1]["close"])
+            curr_close = float(df.iloc[idx]["close"])
+            if prev_close <= 0:
+                continue
+            change = (curr_close - prev_close) / prev_close
+
+            if change > 0:
+                up_count += 1
+            elif change < 0:
+                down_count += 1
+            if change >= 0.098:
+                limit_up_count += 1
+            elif change <= -0.098:
+                limit_down_count += 1
+
+            info = stock_info_map.get(code, {})
+            industry = info.get("industry", "")
+            if industry:
+                industry_changes.setdefault(industry, []).append((code, change))
+
+        # 2. 行业排名（按行业整体涨幅排序，个股取所属行业排名）
+        sector_ranks: Dict[str, int] = {}
+        sector_limit_ups: Dict[str, int] = {}
+        total_sectors = len(industry_changes)
+
+        # 计算每个行业的平均涨幅
+        industry_avg = {}
+        for ind, items in industry_changes.items():
+            avg_chg = sum(c for _, c in items) / len(items)
+            industry_avg[ind] = avg_chg
+            # 行业涨停数
+            lu = sum(1 for _, c in items if c >= 0.098)
+            sector_limit_ups[ind] = lu
+
+        # 行业按涨幅排名
+        sorted_industries = sorted(industry_avg.items(), key=lambda x: x[1], reverse=True)
+        industry_rank = {ind: i + 1 for i, (ind, _) in enumerate(sorted_industries)}
+
+        # 个股的板块排名 = 所属行业排名
+        for ind, items in industry_changes.items():
+            rank = industry_rank.get(ind, total_sectors)
+            for code, _ in items:
+                sector_ranks[code] = rank
+
+        # 3. 指数日线切片（取到当天为止最近 60 天）
+        index_code = self.config.get("index_code", "000001.SH")
+        index_df = None
+        if index_code in index_groups:
+            idx_full = index_groups[index_code]
+            mask = idx_full["date"] <= trade_date
+            idx_slice = idx_full[mask].tail(60)
+            if len(idx_slice) >= 30:
+                index_df = idx_slice.reset_index(drop=True)
+
+        # 4. 市场统计
+        total_stocks = up_count + down_count
+        market_stats = {
+            "up_count": up_count,
+            "down_count": down_count,
+            "limit_up": limit_up_count,
+            "limit_down": limit_down_count,
+            "total": total_stocks,
+        }
+
+        return {
+            "sector_ranks": sector_ranks,
+            "sector_limit_ups": sector_limit_ups,
+            "total_sectors": total_sectors,
+            "index_df": index_df,
+            "market_stats": market_stats,
         }
 
     # ------------------------------------------------------------------
@@ -518,7 +677,8 @@ def print_sell_reasons(sell_reasons: dict) -> None:
 if __name__ == "__main__":
     flush_print("=" * 72)
     flush_print("  T1 v4 多维度评分策略 - 端到端回测（新版）")
-    flush_print("  注意：当前仅技术面评分为真实计算，其他维度为 TODO")
+    flush_print("  评分维度：技术面(30) + 板块面(15) + 市场面(15) = 从日线计算")
+    flush_print("  降级维度：资金面(25) + 基本面(15) = 需额外数据源，给默认分")
     flush_print("=" * 72)
 
     # 1. 加载数据
