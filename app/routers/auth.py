@@ -9,11 +9,13 @@ from typing import Dict, Optional
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 
+from app.config import settings
+
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
 # JWT 简易实现（生产环境用 python-jose）
-JWT_SECRET = "quant-v8-secret-key-change-in-production"
+JWT_SECRET = settings.JWT_SECRET
 JWT_EXPIRE_HOURS = 24
 
 # 内存用户存储

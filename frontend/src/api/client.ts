@@ -3,7 +3,7 @@ import { ElMessage } from 'element-plus'
 
 const api = axios.create({
   baseURL: '/api',
-  timeout: 60000,
+  timeout: 120000,  // 120 秒，支持 sync-data 等长时间操作
 })
 
 // 是否正在刷新 token

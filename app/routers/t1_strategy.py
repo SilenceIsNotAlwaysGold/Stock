@@ -5,10 +5,13 @@ from datetime import date
 from typing import Optional
 
 from fastapi import APIRouter, Depends, Query
+from fastapi.responses import JSONResponse
 from sqlalchemy import select, func, desc
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import settings
 from app.core.database import get_db
+from app.core.exceptions import T1StrategyError
 from app.models.pg_models import T1Candidate, T1Position, T1Trade, T1CriteriaStats
 from app.models.schemas import T1BuyRequest
 from app.services import t1_service
@@ -86,22 +89,28 @@ async def buy_candidate(
     db: AsyncSession = Depends(get_db),
 ):
     """买入候选股"""
-    result = await t1_service.execute_buy(db, req.candidate_id, req.quantity)
-    return {"success": True, **result}
+    try:
+        result = await t1_service.execute_buy(db, req.candidate_id, req.quantity)
+        return {"success": True, **result}
+    except T1StrategyError as e:
+        return JSONResponse(status_code=400, content={"success": False, "error": str(e)})
 
 
 @router.post("/sell/{position_id}")
 async def sell_position(
     position_id: int,
-    sell_price: float = Query(..., description="卖出价格"),
+    sell_price: float = Query(..., gt=0, description="卖出价格"),
     sell_reason: str = Query("manual", description="卖出原因"),
     db: AsyncSession = Depends(get_db),
 ):
     """手动卖出持仓"""
-    result = await t1_service.execute_morning_sell(
-        db, position_id, sell_price, sell_reason
-    )
-    return {"success": True, **result}
+    try:
+        result = await t1_service.execute_morning_sell(
+            db, position_id, sell_price, sell_reason
+        )
+        return {"success": True, **result}
+    except T1StrategyError as e:
+        return JSONResponse(status_code=400, content={"success": False, "error": str(e)})
 
 
 @router.get("/positions")
@@ -264,8 +273,8 @@ async def run_backtest(
 
 @router.post("/sync-data")
 async def sync_stock_data(
-    top_n: int = Query(50, description="同步前N只活跃股票的日线数据"),
-    days: int = Query(30, description="同步最近N天数据"),
+    top_n: int = Query(settings.T1_TOP_N * 10, description="同步前N只活跃股票的日线数据"),
+    days: int = Query(settings.T1_SCAN_DAYS, description="同步最近N天数据"),
     db: AsyncSession = Depends(get_db),
 ):
     """用 Tushare 同步股票列表和日线数据到数据库"""

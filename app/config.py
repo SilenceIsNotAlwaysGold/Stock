@@ -64,8 +64,17 @@ class Settings(BaseSettings):
     TUSHARE_TOKEN: str = ""
     TUSHARE_ENABLED: bool = True
 
+    # Security
+    JWT_SECRET: str = "quant-v8-secret-key-change-in-production"
+
     # CORS
     CORS_ORIGINS: str = "http://localhost:3000,http://localhost:5173"
+
+    # T1 Strategy
+    T1_TOP_N: int = 5
+    T1_MARKET_SAFE_THRESHOLD: float = 0.0
+    T1_MIN_TOTAL_SCORE: float = 40.0
+    T1_SCAN_DAYS: int = 30
 
     @property
     def cors_origins_list(self) -> List[str]:

@@ -60,9 +60,6 @@
             <el-button type="warning" :loading="syncing" @click="doSync"><el-icon><Refresh /></el-icon>&nbsp;同步数据</el-button>
             <el-button type="primary" :loading="scanning" @click="doScan"><el-icon><Search /></el-icon>&nbsp;{{ scanning ? `扫描中 (${scanElapsed}s)` : '扫描选股' }}</el-button>
             <el-select v-model="filterCriterion" placeholder="全部条件" clearable style="width: 150px" @change="loadCandidates">
-              <el-option label="涨停回封" value="limit_reopen" />
-              <el-option label="尾盘拉升" value="tail_surge" />
-              <el-option label="板块龙头" value="sector_leader" />
               <el-option label="v4多维评分" value="v4_multidim" />
             </el-select>
             <span v-if="syncMsg" style="font-size: 12px; color: #909399">{{ syncMsg }}</span>

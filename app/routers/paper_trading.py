@@ -10,6 +10,11 @@ from pydantic import BaseModel, Field
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
+logger.warning(
+    "PaperTrading: 模拟盘数据存储在内存中，重启后将丢失。"
+    "生产环境请迁移到 PostgreSQL 持久化存储。"
+)
+
 # 内存模拟账户（生产环境应使用 PG）
 _accounts: Dict[str, Dict] = {}
 _default_account_id = "default"

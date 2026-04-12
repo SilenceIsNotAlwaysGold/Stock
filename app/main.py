@@ -4,6 +4,7 @@ quant-platform-v8 FastAPI 应用入口
 
 import logging
 import time
+import uuid
 from contextlib import asynccontextmanager
 
 import uvicorn
@@ -77,13 +78,20 @@ async def log_requests(request: Request, call_next):
     if request.url.path in ("/health", "/favicon.ico"):
         return await call_next(request)
 
+    # 生成或读取 request_id
+    request_id = request.headers.get("X-Request-ID", uuid.uuid4().hex[:12])
+
     start = time.time()
     response = await call_next(request)
     elapsed = time.time() - start
+
     logger.info(
-        f"{request.method} {request.url.path} - {response.status_code} ({elapsed:.3f}s)"
+        f"[{request_id}] {request.method} {request.url.path} - {response.status_code} ({elapsed:.3f}s)"
     )
     metrics.record(request.url.path, elapsed, response.status_code)
+
+    # 响应头带上 request_id 方便前端排查
+    response.headers["X-Request-ID"] = request_id
     return response
 
 
