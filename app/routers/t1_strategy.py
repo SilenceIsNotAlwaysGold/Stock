@@ -6,7 +6,7 @@ from typing import Optional
 
 from fastapi import APIRouter, Depends, Query
 from fastapi.responses import JSONResponse
-from sqlalchemy import select, func, desc
+from sqlalchemy import select, func, desc, Integer
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
@@ -268,6 +268,83 @@ async def run_backtest(
         "start_date": start_date,
         "end_date": end_date,
         "criteria": results,
+    }
+
+
+@router.get("/dashboard")
+async def get_dashboard(db: AsyncSession = Depends(get_db)):
+    """T1 策略仪表盘 — 一次返回全部概览数据"""
+    from datetime import timedelta
+
+    today = date.today()
+
+    # 1. 概览统计（复用已有）
+    overview = await t1_service.get_overview_stats(db)
+
+    # 2. 今日候选 Top 3
+    candidates_result = await db.execute(
+        select(T1Candidate)
+        .where(T1Candidate.scan_date == today)
+        .order_by(desc(T1Candidate.score))
+        .limit(3)
+    )
+    top_candidates = [
+        {
+            "ts_code": c.ts_code,
+            "stock_name": c.stock_name,
+            "score": c.score,
+            "tech_score": c.tech_score,
+            "status": c.status,
+        }
+        for c in candidates_result.scalars().all()
+    ]
+
+    # 3. 最近 5 笔交易
+    trades_result = await db.execute(
+        select(T1Trade)
+        .order_by(desc(T1Trade.sell_date))
+        .limit(5)
+    )
+    recent_trades = [
+        {
+            "ts_code": t.ts_code,
+            "stock_name": t.stock_name,
+            "buy_date": str(t.buy_date),
+            "sell_date": str(t.sell_date),
+            "pnl_pct": t.pnl_pct,
+            "is_win": t.is_win,
+            "sell_reason": t.sell_reason,
+        }
+        for t in trades_result.scalars().all()
+    ]
+
+    # 4. 近 7 日每日胜率（从 trades 表聚合）
+    week_ago = today - timedelta(days=7)
+    daily_stats_result = await db.execute(
+        select(
+            T1Trade.sell_date,
+            func.count(T1Trade.id).label("total"),
+            func.sum(func.cast(T1Trade.is_win, Integer)).label("wins"),
+        )
+        .where(T1Trade.sell_date >= week_ago)
+        .group_by(T1Trade.sell_date)
+        .order_by(T1Trade.sell_date)
+    )
+    daily_win_rates = [
+        {
+            "date": str(row.sell_date),
+            "total": row.total,
+            "wins": row.wins or 0,
+            "win_rate": round((row.wins or 0) / max(row.total, 1), 4),
+        }
+        for row in daily_stats_result.all()
+    ]
+
+    return {
+        "overview": overview,
+        "top_candidates": top_candidates,
+        "recent_trades": recent_trades,
+        "daily_win_rates": daily_win_rates,
     }
 
 

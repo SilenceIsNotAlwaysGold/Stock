@@ -94,4 +94,5 @@ export const t1Api = {
   backtest: (data: Record<string, unknown>) => post('/t1/backtest', data),
   syncData: (top_n = 50, days = 30) =>
     post<T1SyncResponse>(`/t1/sync-data?top_n=${top_n}&days=${days}`),
+  dashboard: () => get('/t1/dashboard'),
 }

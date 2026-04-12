@@ -29,7 +29,7 @@
 
       <el-tabs>
         <el-tab-pane label="K线图">
-          <KLineChart :stock-code="stockCode" />
+          <KLineChart :data="[]" />
         </el-tab-pane>
         <el-tab-pane label="技术面">
           <pre class="report-text">{{ report.analysts?.market }}</pre>
