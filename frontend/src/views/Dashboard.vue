@@ -111,13 +111,13 @@ function gradeType(grade: string) {
 }
 
 onMounted(async () => {
-  try { emotion.value = await emotionApi.today() } catch {}
+  try { emotion.value = await emotionApi.today() } catch (e) { console.error('加载市场情绪失败:', e) }
   try {
     const res: any = await recommendApi.today(5)
     recommendations.value = res.recommendations ?? []
-  } catch {}
-  try { strategies.value = await strategyApi.healthList() } catch {}
-  try { account.value = await paperApi.account() } catch {}
+  } catch (e) { console.error('加载推荐失败:', e) }
+  try { strategies.value = await strategyApi.healthList() } catch (e) { console.error('加载策略失败:', e) }
+  try { account.value = await paperApi.account() } catch (e) { console.error('加载账户失败:', e) }
 })
 </script>
 

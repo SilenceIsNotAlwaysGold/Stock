@@ -4,10 +4,10 @@
       <h2 style="text-align: center; margin-bottom: 24px">量化选股平台 v8</h2>
       <el-form :model="form" @submit.prevent="handleLogin">
         <el-form-item>
-          <el-input v-model="form.username" placeholder="用户名" prefix-icon="User" />
+          <el-input v-model="form.username" placeholder="请输入用户名" prefix-icon="User" />
         </el-form-item>
         <el-form-item>
-          <el-input v-model="form.password" type="password" placeholder="密码" prefix-icon="Lock" show-password />
+          <el-input v-model="form.password" type="password" placeholder="请输入密码" prefix-icon="Lock" show-password />
         </el-form-item>
         <el-form-item>
           <el-button type="primary" style="width: 100%" @click="handleLogin" :loading="loading">
@@ -31,7 +31,7 @@ import { ElMessage } from 'element-plus'
 import { authApi } from '@/api'
 
 const router = useRouter()
-const form = ref({ username: 'admin', password: 'admin123' })
+const form = ref({ username: '', password: '' })
 const loading = ref(false)
 
 async function handleLogin() {

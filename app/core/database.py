@@ -70,30 +70,34 @@ def get_redis() -> Redis:
 
 # ---- Lifecycle ----
 async def init_db():
-    """Initialize database connections"""
+    """Initialize database connections — graceful degradation"""
     logger.info("Initializing database connections...")
-    # Test PG connection
+
+    # PostgreSQL（核心，必须成功）
     async with engine.begin() as conn:
         logger.info(
             f"PostgreSQL connected: {settings.PG_HOST}:{settings.PG_PORT}/{settings.PG_DATABASE}"
         )
 
-    # Test MongoDB
-    client = get_mongo_client()
-    await client.admin.command("ping")
-    logger.info(
-        f"MongoDB connected: {settings.MONGO_HOST}:{settings.MONGO_PORT}/{settings.MONGO_DATABASE}"
-    )
+    # MongoDB（可选，失败降级）
+    try:
+        client = get_mongo_client()
+        await client.admin.command("ping")
+        logger.info(
+            f"MongoDB connected: {settings.MONGO_HOST}:{settings.MONGO_PORT}/{settings.MONGO_DATABASE}"
+        )
+    except Exception as e:
+        logger.warning(f"MongoDB connection failed (non-critical, will retry on use): {e}")
 
-    # Test Redis
-    r = get_redis()
-    await r.ping()
-    logger.info(f"Redis connected: {settings.REDIS_HOST}:{settings.REDIS_PORT}")
-
-    # Initialize cache helper
-    from app.core.cache import set_redis
-
-    set_redis(r)
+    # Redis（可选，失败降级）
+    try:
+        r = get_redis()
+        await r.ping()
+        logger.info(f"Redis connected: {settings.REDIS_HOST}:{settings.REDIS_PORT}")
+        from app.core.cache import set_redis
+        set_redis(r)
+    except Exception as e:
+        logger.warning(f"Redis connection failed (non-critical, cache disabled): {e}")
 
 
 async def close_db():

@@ -61,6 +61,7 @@
 
 <script setup lang="ts">
 import { ref, computed } from 'vue'
+import { ElMessage } from 'element-plus'
 import { analysisApi } from '@/api'
 import KLineChart from '@/components/KLineChart.vue'
 
@@ -97,12 +98,14 @@ async function startAnalysis() {
           progress.value = Math.min(progress.value + 5, 95)
           currentNode.value = task.current_node || '分析中...'
         }
-      } catch {
+      } catch (e) {
+        console.error('轮询分析进度失败:', e)
         progress.value = Math.min(progress.value + 3, 95)
       }
     }, 2000)
-  } catch {
+  } catch (e: any) {
     analyzing.value = false
+    ElMessage.error(e?.response?.data?.error?.message || e?.message || '分析请求失败，请稍后重试')
   }
 }
 </script>

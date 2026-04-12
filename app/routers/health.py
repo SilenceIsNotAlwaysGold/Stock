@@ -1,25 +1,54 @@
 """Health check router"""
 
-import time
 from fastapi import APIRouter
+from fastapi.responses import JSONResponse
+from sqlalchemy import text
 from app.core.metrics import metrics
 
 router = APIRouter()
 
-# In-memory cache for health check (30s TTL)
-_health_cache = {"data": None, "expires_at": 0}
-
 
 @router.get("/health")
 async def health_check():
-    now = time.time()
-    if _health_cache["data"] and now < _health_cache["expires_at"]:
-        return _health_cache["data"]
+    """服务健康检查 — 检测 PG/MongoDB/Redis"""
+    checks = {}
+    overall = "ok"
 
-    response = {"status": "ok"}
-    _health_cache["data"] = response
-    _health_cache["expires_at"] = now + 30  # 30s TTL
-    return response
+    # PostgreSQL
+    try:
+        from app.core.database import engine
+        async with engine.connect() as conn:
+            await conn.execute(text("SELECT 1"))
+        checks["postgres"] = "ok"
+    except Exception as e:
+        checks["postgres"] = f"error: {str(e)[:100]}"
+        overall = "degraded"
+
+    # MongoDB
+    try:
+        from app.core.database import get_mongo_client
+        client = get_mongo_client()
+        await client.admin.command("ping")
+        checks["mongodb"] = "ok"
+    except Exception as e:
+        checks["mongodb"] = f"error: {str(e)[:100]}"
+        overall = "degraded"
+
+    # Redis
+    try:
+        from app.core.database import get_redis
+        r = get_redis()
+        await r.ping()
+        checks["redis"] = "ok"
+    except Exception as e:
+        checks["redis"] = f"error: {str(e)[:100]}"
+        overall = "degraded"
+
+    status_code = 200 if overall == "ok" else 503
+    return JSONResponse(
+        status_code=status_code,
+        content={"status": overall, "checks": checks},
+    )
 
 
 @router.get("/metrics")

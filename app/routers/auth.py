@@ -19,14 +19,17 @@ JWT_SECRET = settings.JWT_SECRET
 JWT_EXPIRE_HOURS = 24
 
 # 内存用户存储
-_users: Dict[str, Dict] = {
-    "admin": {
+_users: Dict[str, Dict] = {}
+
+# 演示账户（仅开发环境）
+if settings.APP_ENV == "development":
+    _users["admin"] = {
         "username": "admin",
         "password_hash": hashlib.sha256("admin123".encode()).hexdigest(),
         "role": "admin",
         "created_at": datetime.now().isoformat(),
     }
-}
+    logger.info("Development mode: demo account 'admin' created")
 
 # 活跃 token
 _tokens: Dict[str, Dict] = {}

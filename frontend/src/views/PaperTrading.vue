@@ -99,9 +99,9 @@ const orders = ref<any[]>([])
 const order = ref({ ts_code: '000001.SZ', direction: 'BUY', quantity: 100, price: 10.0 })
 
 async function loadData() {
-  try { account.value = await paperApi.account() } catch {}
-  try { positions.value = await paperApi.positions() as any } catch {}
-  try { orders.value = await paperApi.orders() as any } catch {}
+  try { account.value = await paperApi.account() } catch (e) { console.error('加载账户失败:', e) }
+  try { positions.value = await paperApi.positions() as any } catch (e) { console.error('加载持仓失败:', e) }
+  try { orders.value = await paperApi.orders() as any } catch (e) { console.error('加载订单失败:', e) }
 }
 
 async function placeOrder() {

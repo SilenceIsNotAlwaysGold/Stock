@@ -329,13 +329,13 @@ async function loadCandidates() {
   try {
     const r = await t1Api.candidates('', filterCriterion.value)
     candidates.value = r.items || []
-  } catch { /* client.ts 已统一提示 */ }
+  } catch (e) { console.error('加载候选失败:', e) }
 }
 async function loadPositions() {
   try {
     const r = await t1Api.positions()
     positions.value = r.items || []
-  } catch {}
+  } catch (e) { console.error('加载持仓失败:', e) }
 }
 async function loadTrades(page = 1) {
   try {
@@ -343,14 +343,14 @@ async function loadTrades(page = 1) {
     trades.value = r.items || []
     tradePagination.total = r.total || 0
     tradePagination.page = page
-  } catch {}
+  } catch (e) { console.error('加载交易记录失败:', e) }
 }
 async function loadStats() {
   try {
     const r = await t1Api.stats()
     if (r.overview) Object.assign(overview, r.overview)
     criteriaStats.value = r.criteria || []
-  } catch {}
+  } catch (e) { console.error('加载统计失败:', e) }
 }
 
 async function doSync() {
@@ -364,8 +364,9 @@ async function doSync() {
       syncMsg.value = ''
       ElMessage.error(r.error || '同步失败')
     }
-  } catch {
+  } catch (e: any) {
     syncMsg.value = ''
+    ElMessage.error(e?.response?.data?.error?.message || e?.message || '同步失败，请稍后重试')
   } finally {
     syncing.value = false
   }
@@ -379,8 +380,8 @@ async function doScan() {
     ElMessage.success(`扫描完成，发现 ${r.found || 0} 只候选股`)
     await loadCandidates()
     await loadStats()
-  } catch {
-    // client.ts 已统一提示
+  } catch (e: any) {
+    ElMessage.error(e?.response?.data?.error?.message || e?.message || '扫描失败，请稍后重试')
   } finally {
     scanning.value = false
     if (scanTimer) { clearInterval(scanTimer); scanTimer = null }
@@ -392,7 +393,11 @@ async function doBuy(row: T1Candidate) {
     await t1Api.buy(row.id)
     ElMessage.success('买入成功')
     await loadCandidates(); await loadPositions(); await loadStats()
-  } catch { /* ElMessageBox 取消 or client.ts 已处理 */ }
+  } catch (e: any) {
+    if (e !== 'cancel' && e?.type !== 'cancel') {
+      ElMessage.error(e?.response?.data?.error?.message || e?.message || '买入操作失败')
+    }
+  }
 }
 async function doSell(row: T1Position) {
   try {
@@ -406,7 +411,11 @@ async function doSell(row: T1Position) {
     const r = await t1Api.sell(row.id, parseFloat(result.value))
     ElMessage.success(`卖出成功，盈亏 ${r.pnl_pct}%`)
     await loadPositions(); await loadTrades(); await loadStats()
-  } catch { /* ElMessageBox 取消 or client.ts 已处理 */ }
+  } catch (e: any) {
+    if (e !== 'cancel' && e?.type !== 'cancel') {
+      ElMessage.error(e?.response?.data?.error?.message || e?.message || '卖出操作失败')
+    }
+  }
 }
 function onTradePageChange(page: number) { loadTrades(page) }
 function candidateRowClass({ row }: { row: T1Candidate }) { return row.score >= 70 ? 'high-score-row' : '' }
