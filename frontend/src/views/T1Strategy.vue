@@ -58,7 +58,7 @@
         <el-tab-pane label="候选股监控" name="candidates">
           <div style="margin-bottom: 12px; display: flex; gap: 12px; align-items: center">
             <el-button type="warning" :loading="syncing" @click="doSync"><el-icon><Refresh /></el-icon>&nbsp;同步数据</el-button>
-            <el-button type="primary" :loading="scanning" @click="doScan"><el-icon><Search /></el-icon>&nbsp;扫描选股</el-button>
+            <el-button type="primary" :loading="scanning" @click="doScan"><el-icon><Search /></el-icon>&nbsp;{{ scanning ? `扫描中 (${scanElapsed}s)` : '扫描选股' }}</el-button>
             <el-select v-model="filterCriterion" placeholder="全部条件" clearable style="width: 150px" @change="loadCandidates">
               <el-option label="涨停回封" value="limit_reopen" />
               <el-option label="尾盘拉升" value="tail_surge" />
@@ -69,7 +69,11 @@
           </div>
           <el-table :data="pagedCandidates" stripe v-loading="scanning" size="small" :row-class-name="candidateRowClass" empty-text="暂无候选股，请先同步数据再扫描选股">
             <el-table-column prop="ts_code" label="代码" width="100" />
-            <el-table-column prop="stock_name" label="名称" width="90" />
+            <el-table-column prop="stock_name" label="名称" width="90">
+              <template #default="{ row }">
+                <el-link type="primary" @click="openDetail(row)">{{ row.stock_name }}</el-link>
+              </template>
+            </el-table-column>
             <el-table-column prop="criterion" label="条件" width="95">
               <template #default="{ row }"><el-tag :type="criterionTagType(row.criterion)" size="small" effect="dark">{{ criterionLabel(row.criterion) }}</el-tag></template>
             </el-table-column>
@@ -203,11 +207,33 @@
       </el-tabs>
     </el-card>
   </div>
+
+  <!-- 候选股详情弹窗 -->
+  <el-dialog v-model="showDetail" :title="`${selectedCandidate?.stock_name} (${selectedCandidate?.ts_code})`" width="500px" destroy-on-close>
+    <template v-if="selectedCandidate">
+      <div style="text-align: center; margin-bottom: 16px">
+        <span style="font-size: 32px; font-weight: 700" :style="{ color: (selectedCandidate.score ?? 0) >= 50 ? '#67c23a' : '#e6a23c' }">
+          {{ selectedCandidate.score?.toFixed(1) }}
+        </span>
+        <span style="font-size: 14px; color: #909399"> / 100 分</span>
+      </div>
+      <div ref="radarChartRef" style="width: 350px; height: 300px; margin: 0 auto"></div>
+      <el-descriptions :column="2" size="small" border style="margin-top: 16px">
+        <el-descriptions-item label="技术面">{{ selectedCandidate.tech_score?.toFixed(1) }} / 30</el-descriptions-item>
+        <el-descriptions-item label="资金面">{{ selectedCandidate.capital_score?.toFixed(1) }} / 25</el-descriptions-item>
+        <el-descriptions-item label="基本面">{{ selectedCandidate.fundamental_score?.toFixed(1) }} / 15</el-descriptions-item>
+        <el-descriptions-item label="板块面">{{ selectedCandidate.sector_score?.toFixed(1) }} / 15</el-descriptions-item>
+        <el-descriptions-item label="市场面">{{ selectedCandidate.market_score?.toFixed(1) }} / 15</el-descriptions-item>
+        <el-descriptions-item label="收盘价">{{ selectedCandidate.close_price }}</el-descriptions-item>
+      </el-descriptions>
+    </template>
+  </el-dialog>
 </template>
 
 <script setup lang="ts">
-import { ref, reactive, onMounted, computed } from 'vue'
+import { ref, reactive, onMounted, computed, nextTick } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
+import * as echarts from 'echarts'
 import { t1Api } from '@/api'
 import type { T1Candidate, T1Position, T1Trade, T1CriteriaStats, T1Overview } from '@/types'
 import T1StatsChart from '@/components/T1StatsChart.vue'
@@ -215,6 +241,8 @@ import T1StatsChart from '@/components/T1StatsChart.vue'
 const activeTab = ref('candidates')
 const scanning = ref(false)
 const syncing = ref(false)
+const scanElapsed = ref(0)
+let scanTimer: ReturnType<typeof setInterval> | null = null
 const syncMsg = ref('')
 const filterCriterion = ref('')
 const overview = reactive<T1Overview>({ candidates_today: 0, positions_holding: 0, total_trades: 0, win_rate: 0, total_pnl: 0 })
@@ -225,6 +253,48 @@ const criteriaStats = ref<T1CriteriaStats[]>([])
 const tradePagination = reactive({ page: 1, pageSize: 20, total: 0 })
 const candidatePage = ref(1)
 const candidatePageSize = ref(10)
+
+const showDetail = ref(false)
+const selectedCandidate = ref<T1Candidate | null>(null)
+const radarChartRef = ref<HTMLElement | null>(null)
+
+function openDetail(row: T1Candidate) {
+  selectedCandidate.value = row
+  showDetail.value = true
+  nextTick(() => {
+    if (radarChartRef.value) {
+      const chart = echarts.init(radarChartRef.value)
+      chart.setOption({
+        radar: {
+          indicator: [
+            { name: '技术', max: 30 },
+            { name: '资金', max: 25 },
+            { name: '基本面', max: 15 },
+            { name: '板块', max: 15 },
+            { name: '市场', max: 15 },
+          ],
+          shape: 'circle',
+          splitArea: { areaStyle: { color: ['rgba(64,158,255,0.05)', 'rgba(64,158,255,0.1)'] } },
+        },
+        series: [{
+          type: 'radar',
+          data: [{
+            value: [
+              row.tech_score ?? 0,
+              row.capital_score ?? 0,
+              row.fundamental_score ?? 0,
+              row.sector_score ?? 0,
+              row.market_score ?? 0,
+            ],
+            areaStyle: { color: 'rgba(64, 158, 255, 0.3)' },
+            lineStyle: { color: '#409eff' },
+            itemStyle: { color: '#409eff' },
+          }],
+        }],
+      })
+    }
+  })
+}
 
 const pagedCandidates = computed(() => {
   const start = (candidatePage.value - 1) * candidatePageSize.value
@@ -305,6 +375,8 @@ async function doSync() {
 }
 async function doScan() {
   scanning.value = true
+  scanElapsed.value = 0
+  scanTimer = setInterval(() => { scanElapsed.value++ }, 1000)
   try {
     const r = await t1Api.scan()
     ElMessage.success(`扫描完成，发现 ${r.found || 0} 只候选股`)
@@ -314,6 +386,7 @@ async function doScan() {
     // client.ts 已统一提示
   } finally {
     scanning.value = false
+    if (scanTimer) { clearInterval(scanTimer); scanTimer = null }
   }
 }
 async function doBuy(row: T1Candidate) {

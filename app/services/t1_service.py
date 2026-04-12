@@ -70,46 +70,63 @@ async def scan_candidates(
     stocks = result.all()
     logger.info(f"T1 v4 scan: {len(stocks)} active stocks")
 
-    create_task(task_id, total=len(stocks))
+    create_task(task_id, total=4)  # 4 步：加载数据 → 板块排名 → 评分 → 写入
 
     try:
-        # 预计算板块排名 + 板块涨停数
+        update_progress(task_id, current=0, message="批量加载日线数据...")
+
+        # ── 批量加载所有有日线数据的股票（一次查询，消除 N+1）──
+        from sqlalchemy import text
+
+        all_bars_result = await db.execute(
+            select(DailyBar)
+            .order_by(DailyBar.ts_code, DailyBar.trade_date.desc())
+        )
+        all_bars = all_bars_result.scalars().all()
+
+        # 按 ts_code 分组，每只取最近 30 条
+        bars_by_code: Dict[str, list] = {}
+        for bar in all_bars:
+            code = bar.ts_code
+            if code not in bars_by_code:
+                bars_by_code[code] = []
+            if len(bars_by_code[code]) < 30:
+                bars_by_code[code].append(bar)
+
+        logger.info(f"T1 v4 scan: loaded bars for {len(bars_by_code)} stocks in 1 query")
+        update_progress(task_id, current=1, message="计算板块排名...")
+
+        # ── 预计算板块排名 + 板块涨停数 ──
+        stock_info_map = {
+            ts_code: (stock_name, industry, list_date)
+            for ts_code, stock_name, industry, list_date in stocks
+        }
+
         sector_ranks = {}
         total_sectors = 0
         sector_limit_up_counts = {}
         industry_changes = {}
 
-        for i, (ts_code, stock_name, industry, list_date) in enumerate(stocks):
-            bars_result = await db.execute(
-                select(DailyBar)
-                .where(DailyBar.ts_code == ts_code)
-                .order_by(DailyBar.trade_date.desc())
-                .limit(2)
-            )
-            bars = bars_result.scalars().all()
-            if len(bars) >= 2:
-                prev_close = float(bars[1].close or 1) or 0.01
-                change = (float(bars[0].close or 0) - prev_close) / prev_close
-                if industry:
-                    industry_changes.setdefault(industry, []).append(
-                        (ts_code, change)
+        for ts_code, bars_list in bars_by_code.items():
+            if len(bars_list) < 2:
+                continue
+            info = stock_info_map.get(ts_code)
+            if not info:
+                continue
+            _, industry, _ = info
+            # bars_list 按 desc 排序，[0] 是最新，[1] 是次新
+            prev_close = float(bars_list[1].close or 1) or 0.01
+            change = (float(bars_list[0].close or 0) - prev_close) / prev_close
+            if industry:
+                industry_changes.setdefault(industry, []).append((ts_code, change))
+                if change >= 0.098:
+                    sector_limit_up_counts[industry] = (
+                        sector_limit_up_counts.get(industry, 0) + 1
                     )
-                    # 统计涨停
-                    if change >= 0.098:
-                        sector_limit_up_counts[industry] = (
-                            sector_limit_up_counts.get(industry, 0) + 1
-                        )
-
-            if i % 50 == 0:
-                update_progress(task_id, current=i, message=f"处理中 {i}/{len(stocks)}")
 
         total_sectors = len(industry_changes)
-        for industry, items in industry_changes.items():
-            sorted_items = sorted(items, key=lambda x: x[1], reverse=True)
-            for rank, (code, _) in enumerate(sorted_items, 1):
-                sector_ranks[code] = rank
 
-        # 对行业按整体涨幅排名
+        # 行业按整体涨幅排名
         industry_avg_change = {
             ind: sum(c for _, c in items) / len(items)
             for ind, items in industry_changes.items()
@@ -119,7 +136,9 @@ async def scan_candidates(
         )
         industry_rank_map = {ind: i + 1 for i, (ind, _) in enumerate(sorted_industries)}
 
-        # 构建 stock_pool 和 daily_data
+        update_progress(task_id, current=2, message="构建评分数据...")
+
+        # ── 构建 stock_pool 和 daily_data ──
         stock_pool = []
         daily_data = {}
         stock_contexts = {}
@@ -128,18 +147,12 @@ async def scan_candidates(
             if ts_code in bought_codes:
                 continue
 
-            # 获取最近30天日线数据
-            bars_result = await db.execute(
-                select(DailyBar)
-                .where(DailyBar.ts_code == ts_code)
-                .order_by(DailyBar.trade_date.desc())
-                .limit(30)
-            )
-            bars = bars_result.scalars().all()
-            if len(bars) < 5:
+            bars_list = bars_by_code.get(ts_code)
+            if not bars_list or len(bars_list) < 5:
                 continue
 
-            bars = list(reversed(bars))
+            # 反转为正序（bars_list 是 desc 的）
+            bars_asc = list(reversed(bars_list))
             df = pd.DataFrame(
                 [
                     {
@@ -152,7 +165,7 @@ async def scan_candidates(
                         "amount": float(b.amount or 0),
                         "turnover_rate": b.turnover_rate or 0,
                     }
-                    for b in bars
+                    for b in bars_asc
                 ]
             )
 
@@ -166,14 +179,13 @@ async def scan_candidates(
             daily_data[ts_code] = df
 
             # 个股 context
-            last_bar = bars[-1]
+            last_bar = bars_asc[-1]
             stock_contexts[ts_code] = {
                 "turnover_rate": float(last_bar.turnover_rate or 0) or None,
                 "sector_rank": industry_rank_map.get(industry),
                 "total_sectors": total_sectors,
                 "sector_limit_up_count": sector_limit_up_counts.get(industry, 0),
                 "is_suspended": False,
-                # 以下字段需要额外数据源支撑，当前给 None 降级
                 "money_flow_df": None,
                 "north_flow_df": None,
                 "fina_df": None,
@@ -181,13 +193,13 @@ async def scan_candidates(
                 "industry_pe_median": None,
             }
 
-        # 全局 context（指数、市场统计等）
+        # 全局 context
         global_context = {
             "index_df": None,
             "market_stats": None,
         }
 
-        update_progress(task_id, current=len(stocks), message="评分排序中...")
+        update_progress(task_id, current=3, message=f"评分排序 {len(stock_pool)} 只...")
         logger.info(
             f"T1 v4 scan: scoring {len(stock_pool)} eligible stocks..."
         )
