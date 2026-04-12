@@ -41,7 +41,7 @@ async def scan_candidates(
     if task_id is None:
         task_id = f"t1_scan_{scan_date}_{uuid.uuid4().hex[:8]}"
 
-    scorer = T1V4Scorer(top_n=top_n, market_safe_threshold=0)
+    scorer = T1V4Scorer(top_n=top_n, market_safe_threshold=0, min_total_score=40)
 
     # 清除当天已有的 pending 候选（避免重复扫描累积）
     from sqlalchemy import delete as sql_delete

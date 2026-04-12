@@ -291,6 +291,12 @@ async def sync_stock_data(
         list_status="L",
         fields="ts_code,name,industry,area,market,list_date",
     )
+    def _safe_str(val, default=""):
+        """NaN/None → 空字符串"""
+        if val is None or (isinstance(val, float) and val != val):
+            return default
+        return str(val)
+
     stock_count = 0
     for _, row in stock_df.iterrows():
         existing = await db.get(Stock, row["ts_code"])
@@ -298,10 +304,10 @@ async def sync_stock_data(
             db.add(
                 Stock(
                     ts_code=row["ts_code"],
-                    name=row["name"],
-                    industry=row.get("industry", ""),
-                    area=row.get("area", ""),
-                    market=row.get("market", ""),
+                    name=_safe_str(row["name"]),
+                    industry=_safe_str(row.get("industry")),
+                    area=_safe_str(row.get("area")),
+                    market=_safe_str(row.get("market")),
                     list_date=(
                         datetime.strptime(row["list_date"], "%Y%m%d").date()
                         if row.get("list_date")
