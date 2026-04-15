@@ -74,8 +74,8 @@ SCHEDULED_TASKS = {
     },
     "t1_scan": {
         "name": "T1 候选扫描",
-        "cron": "30 14 * * 1-5",
-        "description": "每个交易日 14:30 扫描T+1隔夜策略候选股",
+        "cron": "30 15 * * 1-5",
+        "description": "每个交易日 15:30（收盘后）扫描T+1隔夜策略候选股",
     },
     "t1_premarket": {
         "name": "T1 盘前准备",

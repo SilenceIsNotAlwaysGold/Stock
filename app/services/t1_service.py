@@ -36,6 +36,8 @@ async def scan_candidates(
     import uuid
     import pandas as pd
     from engine.t1_v4.scorer import T1V4Scorer
+    from engine.t1_v4.resonance import ResonanceDetector
+    from engine.t1_v4.position_manager import PositionManager
     from app.core.progress import create_task, update_progress, complete_task, fail_task
 
     if task_id is None:
@@ -218,6 +220,62 @@ async def scan_candidates(
             top_n=top_n,
         )
 
+        # ── 共振检测：对 Top 候选运行其他策略 ──
+        resonance_detector = ResonanceDetector()
+        resonance_results = {}
+        for s in top_scores:
+            res = resonance_detector.detect(s.ts_code, daily_data.get(s.ts_code))
+            resonance_results[s.ts_code] = res
+            # 共振加分（加到 total_score 用于重排序）
+            s.total_score += res.resonance_bonus
+            s.details["resonance_count"] = res.resonance_count
+            s.details["resonance_bonus"] = res.resonance_bonus
+            s.details["resonating_strategies"] = res.resonating_strategies
+
+        # 重排序（共振加分可能改变排名）
+        top_scores.sort(key=lambda s: s.total_score, reverse=True)
+
+        # ── 仓位管理：计算建议仓位 ──
+        # 查询近期交易记录（用于连续亏损判断）
+        recent_trades_result = await db.execute(
+            select(T1Trade.is_win, T1Trade.sell_date)
+            .order_by(T1Trade.sell_date.desc())
+            .limit(10)
+        )
+        recent_trades = [
+            {"is_win": row.is_win, "sell_date": str(row.sell_date)}
+            for row in recent_trades_result.all()
+        ]
+
+        position_mgr = PositionManager(
+            max_single_pct=settings.T1_MAX_SINGLE_PCT,
+            cash_reserve_pct=settings.T1_CASH_RESERVE_PCT,
+            consecutive_loss_limit=settings.T1_CONSECUTIVE_LOSS_LIMIT,
+            consecutive_loss_reduce=settings.T1_CONSECUTIVE_LOSS_REDUCE,
+            max_drawdown_pct=settings.T1_MAX_DRAWDOWN_PCT,
+            drawdown_pause_days=settings.T1_DRAWDOWN_PAUSE_DAYS,
+        )
+
+        # 构建候选信息（含收盘价）
+        scored_with_price = []
+        for s in top_scores:
+            df = daily_data.get(s.ts_code)
+            close_price = float(df.iloc[-1]["close"]) if df is not None and not df.empty else 0
+            scored_with_price.append({
+                "ts_code": s.ts_code,
+                "stock_name": s.stock_name,
+                "total_score": s.total_score,
+                "close_price": close_price,
+            })
+
+        # 使用默认10万作为参考资金（实际可从模拟账户读取）
+        position_advices = position_mgr.allocate(
+            candidates=scored_with_price,
+            total_cash=100000.0,
+            recent_trades=recent_trades,
+        )
+        advice_map = {a.ts_code: a for a in position_advices}
+
         # 写入数据库
         candidates = []
         for s in top_scores:
@@ -225,6 +283,9 @@ async def scan_candidates(
             df = daily_data.get(s.ts_code)
             if df is not None and not df.empty:
                 last_close = float(df.iloc[-1]["close"])
+
+            res = resonance_results.get(s.ts_code)
+            adv = advice_map.get(s.ts_code)
 
             candidate = T1Candidate(
                 scan_date=scan_date,
@@ -241,6 +302,14 @@ async def scan_candidates(
                 close_price=Decimal(str(last_close)),
                 status="pending",
                 reason=f"v4综合评分{s.total_score:.1f}分",
+                # 共振字段
+                resonance_count=res.resonance_count if res else 0,
+                resonance_bonus=res.resonance_bonus if res else 0.0,
+                resonating_strategies=",".join(res.resonating_strategies) if res else None,
+                # 仓位建议字段
+                suggested_pct=adv.suggested_pct if adv else None,
+                suggested_quantity=adv.suggested_quantity if adv else None,
+                position_reason=adv.reason if adv else None,
                 created_at=datetime.utcnow(),
             )
             db.add(candidate)
@@ -255,6 +324,10 @@ async def scan_candidates(
                     "fundamental_score": s.fundamental_score,
                     "sector_score": s.sector_score,
                     "market_score": s.market_score,
+                    "resonance_count": res.resonance_count if res else 0,
+                    "resonance_bonus": res.resonance_bonus if res else 0.0,
+                    "suggested_pct": adv.suggested_pct if adv else None,
+                    "suggested_quantity": adv.suggested_quantity if adv else None,
                     "reason": f"v4综合评分{s.total_score:.1f}分",
                 }
             )

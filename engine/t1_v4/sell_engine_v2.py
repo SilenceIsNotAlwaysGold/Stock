@@ -38,12 +38,12 @@ class SellEngineV2:
         self,
         # 阶段 1 参数
         phase1_take_profit: float = 0.05,   # 高开止盈线 5%
-        phase1_stop_loss: float = -0.02,    # 低开止损线 -2%
+        phase1_stop_loss: float = -0.03,    # 低开止损线 -3%（主板-2%常见，放宽以减少被震出）
         # 阶段 2 参数
-        phase2_take_profit: float = 0.03,   # 盘中止盈 3%
-        phase2_stop_loss: float = -0.02,    # 盘中止损 -2%
+        phase2_take_profit: float = 0.05,   # 盘中止盈 5%（让利润奔跑，不急于3%就走）
+        phase2_stop_loss: float = -0.03,    # 盘中止损 -3%（容忍日内波动）
         # 阶段 3 参数
-        phase3_stop_loss: float = -0.015,   # 观察期止损 -1.5%
+        phase3_stop_loss: float = -0.025,   # 观察期止损 -2.5%
         # 涨停阈值
         limit_up_pct: float = 0.098,
     ):

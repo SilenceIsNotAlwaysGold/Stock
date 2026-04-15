@@ -70,11 +70,29 @@ class Settings(BaseSettings):
     # CORS
     CORS_ORIGINS: str = "http://localhost:3000,http://localhost:5173"
 
-    # T1 Strategy
-    T1_TOP_N: int = 5
-    T1_MARKET_SAFE_THRESHOLD: float = 0.0
-    T1_MIN_TOTAL_SCORE: float = 40.0
+    # T1 Strategy — 基础参数
+    T1_TOP_N: int = 2
+    T1_MARKET_SAFE_THRESHOLD: float = 8.0
+    T1_MIN_TOTAL_SCORE: float = 55.0
     T1_SCAN_DAYS: int = 30
+
+    # T1 Strategy — 交易权限（排除的板块前缀，逗号分隔）
+    T1_EXCLUDED_PREFIXES: str = "688,300,8,4"
+
+    # T1 Strategy — 卖出引擎参数
+    T1_SELL_PHASE1_TAKE_PROFIT: float = 0.05
+    T1_SELL_PHASE1_STOP_LOSS: float = -0.03
+    T1_SELL_PHASE2_TAKE_PROFIT: float = 0.05
+    T1_SELL_PHASE2_STOP_LOSS: float = -0.03
+    T1_SELL_PHASE3_STOP_LOSS: float = -0.025
+
+    # T1 Strategy — 仓位管理
+    T1_MAX_SINGLE_PCT: float = 0.60
+    T1_CASH_RESERVE_PCT: float = 0.20
+    T1_CONSECUTIVE_LOSS_LIMIT: int = 3
+    T1_CONSECUTIVE_LOSS_REDUCE: float = 0.50
+    T1_MAX_DRAWDOWN_PCT: float = 0.15
+    T1_DRAWDOWN_PAUSE_DAYS: int = 3
 
     @property
     def cors_origins_list(self) -> List[str]:

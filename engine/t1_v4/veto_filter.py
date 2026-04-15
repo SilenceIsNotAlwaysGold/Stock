@@ -27,18 +27,27 @@ class VetoFilter:
     7条否决规则：
     1. ST 或 *ST 股票
     2. 上市不足 60 天（次新股）
-    3. 科创板（688xxx）/ 北交所（8xxx/4xxx）
+    3. 板块权限过滤 — 默认排除科创板(688)/创业板(300)/北交所(8/4)，可配置
     4. 当日涨停（无法买入）
     5. 当日跌停（趋势极弱）
     6. 停牌
     7. 近 5 日有涨跌停（波动过大）
     """
 
+    # 板块代码前缀 → 可读名称
+    PREFIX_LABELS = {
+        "688": "科创板",
+        "300": "创业板",
+        "8": "北交所",
+        "4": "北交所",
+    }
+
     DEFAULT_PARAMS = {
         "min_list_days": 60,
         "limit_up_pct": 0.098,    # 主板涨停阈值 9.8%（留余量）
         "limit_down_pct": -0.098,
         "recent_limit_days": 5,   # 检查近 N 日是否有涨跌停
+        "excluded_prefixes": ["688", "300", "8", "4"],  # 排除的板块前缀（可配置）
     }
 
     def __init__(self, **overrides):
@@ -120,16 +129,14 @@ class VetoFilter:
             except (ValueError, TypeError):
                 pass  # 日期格式异常时跳过此规则
 
-        # ---- 规则 3：科创板 / 北交所 ----------------------------------
+        # ---- 规则 3：板块权限过滤（科创板/创业板/北交所）--------------
         code = ts_code.split(".")[0] if "." in ts_code else ts_code
-        if code.startswith("688"):
-            result.passed = False
-            result.reject_reasons.append("科创板（688xxx）")
-            return result
-        if code.startswith("8") or code.startswith("4"):
-            result.passed = False
-            result.reject_reasons.append("北交所（8xxx/4xxx）")
-            return result
+        for prefix in self.params["excluded_prefixes"]:
+            if code.startswith(prefix):
+                label = self.PREFIX_LABELS.get(prefix, prefix)
+                result.passed = False
+                result.reject_reasons.append(f"{label}（{prefix}xxx）")
+                return result
 
         # ---- 规则 6：停牌（先判停牌，后续规则需要数据）----------------
         if is_suspended:

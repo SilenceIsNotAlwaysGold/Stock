@@ -389,13 +389,13 @@ class T1Candidate(Base):
         Float, comment="技术面评分 0-30"
     )
     capital_score: Mapped[Optional[float]] = mapped_column(
-        Float, comment="资金面评分 0-25"
+        Float, comment="资金面评分 0-30"
     )
     fundamental_score: Mapped[Optional[float]] = mapped_column(
-        Float, comment="基本面评分 0-15"
+        Float, comment="基本面评分 0-8"
     )
     sector_score: Mapped[Optional[float]] = mapped_column(
-        Float, comment="板块面评分 0-15"
+        Float, comment="板块面评分 0-17"
     )
     market_score: Mapped[Optional[float]] = mapped_column(
         Float, comment="市场面评分 0-15"
@@ -413,6 +413,26 @@ class T1Candidate(Base):
         String(20), default="pending", nullable=False, comment="pending/bought/skipped"
     )
     reason: Mapped[Optional[str]] = mapped_column(Text, comment="选股理由")
+    # 仓位建议字段 (R4)
+    suggested_pct: Mapped[Optional[float]] = mapped_column(
+        Float, comment="建议仓位比例 0-1"
+    )
+    suggested_quantity: Mapped[Optional[int]] = mapped_column(
+        Integer, comment="建议买入股数"
+    )
+    position_reason: Mapped[Optional[str]] = mapped_column(
+        String(200), comment="仓位决策原因"
+    )
+    # 共振字段 (R5)
+    resonance_count: Mapped[Optional[int]] = mapped_column(
+        Integer, default=0, comment="共振策略数"
+    )
+    resonance_bonus: Mapped[Optional[float]] = mapped_column(
+        Float, default=0.0, comment="共振加分"
+    )
+    resonating_strategies: Mapped[Optional[str]] = mapped_column(
+        Text, comment="共振策略名列表(逗号分隔)"
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime, default=datetime.utcnow, nullable=False
     )

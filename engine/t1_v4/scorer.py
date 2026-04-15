@@ -24,11 +24,11 @@ class StockScore:
 
     ts_code: str
     stock_name: str = ""
-    total_score: float = 0.0        # 0-100
+    total_score: float = 0.0        # 0-100（共振加分后可达115）
     tech_score: float = 0.0         # 0-30
-    capital_score: float = 0.0      # 0-25
-    fundamental_score: float = 0.0  # 0-15
-    sector_score: float = 0.0       # 0-15
+    capital_score: float = 0.0      # 0-30
+    fundamental_score: float = 0.0  # 0-8
+    sector_score: float = 0.0       # 0-17
     market_score: float = 0.0       # 0-15
     vetoed: bool = False
     veto_reason: str = ""
@@ -48,9 +48,9 @@ class T1V4Scorer:
     """
 
     DEFAULT_CONFIG = {
-        "top_n": 5,                    # 每日最多选 N 只
+        "top_n": 2,                    # 每日最多选 2 只（集中持仓）
         "market_safe_threshold": 8.0,  # 市场面安全阈值（15分中的8分）
-        "min_total_score": 50.0,       # 最低总分阈值
+        "min_total_score": 55.0,       # 最低总分阈值（提高选股质量）
     }
 
     def __init__(self, **config_overrides):

@@ -294,6 +294,10 @@ async def get_dashboard(db: AsyncSession = Depends(get_db)):
             "stock_name": c.stock_name,
             "score": c.score,
             "tech_score": c.tech_score,
+            "capital_score": c.capital_score,
+            "resonance_count": c.resonance_count or 0,
+            "suggested_pct": c.suggested_pct,
+            "suggested_quantity": c.suggested_quantity,
             "status": c.status,
         }
         for c in candidates_result.scalars().all()
@@ -345,6 +349,91 @@ async def get_dashboard(db: AsyncSession = Depends(get_db)):
         "top_candidates": top_candidates,
         "recent_trades": recent_trades,
         "daily_win_rates": daily_win_rates,
+    }
+
+
+@router.get("/report")
+async def get_daily_report(
+    report_date: Optional[str] = Query(None, description="报告日期 YYYY-MM-DD，默认今天"),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    每日扫描报告 — 包含候选股评分、共振状态、仓位建议和风控状态。
+    适合早盘前快速查看，决定今日操作。
+    """
+    if report_date:
+        try:
+            target_date = date.fromisoformat(report_date)
+        except ValueError:
+            return {"error": "日期格式错误，请使用 YYYY-MM-DD"}
+    else:
+        target_date = date.today()
+
+    # 候选列表（含完整信息）
+    candidates_result = await db.execute(
+        select(T1Candidate)
+        .where(T1Candidate.scan_date == target_date)
+        .order_by(desc(T1Candidate.score))
+    )
+    candidates_list = []
+    for c in candidates_result.scalars().all():
+        candidates_list.append({
+            "ts_code": c.ts_code,
+            "stock_name": c.stock_name,
+            "score": c.score,
+            "tech_score": c.tech_score,
+            "capital_score": c.capital_score,
+            "fundamental_score": c.fundamental_score,
+            "sector_score": c.sector_score,
+            "market_score": c.market_score,
+            "resonance_count": c.resonance_count or 0,
+            "resonance_bonus": c.resonance_bonus or 0.0,
+            "resonating_strategies": c.resonating_strategies.split(",") if c.resonating_strategies else [],
+            "suggested_pct": c.suggested_pct,
+            "suggested_quantity": c.suggested_quantity,
+            "position_reason": c.position_reason,
+            "close_price": float(c.close_price) if c.close_price else None,
+            "status": c.status,
+        })
+
+    # 近期胜率统计
+    recent_stats = await db.execute(
+        select(
+            func.count(T1Trade.id).label("total"),
+            func.sum(func.cast(T1Trade.is_win, Integer)).label("wins"),
+            func.avg(T1Trade.pnl_pct).label("avg_pnl"),
+        )
+    )
+    stats_row = recent_stats.one()
+    total_trades = stats_row.total or 0
+    total_wins = stats_row.wins or 0
+
+    # 风控状态
+    consecutive_losses = 0
+    recent_trades_result = await db.execute(
+        select(T1Trade.is_win)
+        .order_by(desc(T1Trade.sell_date))
+        .limit(10)
+    )
+    for row in recent_trades_result.all():
+        if not row.is_win:
+            consecutive_losses += 1
+        else:
+            break
+
+    return {
+        "report_date": str(target_date),
+        "candidates": candidates_list,
+        "candidates_count": len(candidates_list),
+        "stats": {
+            "total_trades": total_trades,
+            "win_rate": round(total_wins / max(total_trades, 1), 4),
+            "avg_pnl_pct": round(float(stats_row.avg_pnl or 0), 2),
+        },
+        "risk_control": {
+            "consecutive_losses": consecutive_losses,
+            "is_paused": consecutive_losses >= settings.T1_CONSECUTIVE_LOSS_LIMIT,
+        },
     }
 
 
