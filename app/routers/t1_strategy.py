@@ -12,7 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import settings
 from app.core.database import get_db
 from app.core.exceptions import T1StrategyError
-from app.models.pg_models import T1Candidate, T1Position, T1Trade, T1CriteriaStats
+from app.models.pg_models import T1Candidate, T1Position, T1Trade, T1CriteriaStats, Stock, DailyBar
 from app.models.schemas import T1BuyRequest
 from app.services import t1_service
 
@@ -217,6 +217,128 @@ async def get_stats(db: AsyncSession = Depends(get_db)):
             }
             for s in stats
         ],
+    }
+
+
+@router.post("/backtest-sim")
+async def run_backtest_simulation(
+    start_date: str = Query("2025-10-01", description="回测开始日期 YYYY-MM-DD"),
+    end_date: str = Query("2026-04-14", description="回测结束日期 YYYY-MM-DD"),
+    initial_cash: float = Query(100000.0, description="初始资金"),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    T1 v4 策略历史回测模拟。
+
+    使用当前评分参数(权重/阈值/卖出参数)对历史数据进行完整模拟。
+    包含交易成本（佣金万2.5 + 印花税千1）。
+    """
+    from engine.t1_v4.backtester import T1Backtester
+    import pandas as pd
+
+    bt = T1Backtester(
+        initial_cash=initial_cash,
+        top_n=settings.T1_TOP_N,
+        market_safe_threshold=settings.T1_MARKET_SAFE_THRESHOLD,
+        min_total_score=settings.T1_MIN_TOTAL_SCORE,
+    )
+
+    # 从数据库加载日线数据
+    result = await db.execute(
+        select(DailyBar)
+        .where(DailyBar.trade_date >= date.fromisoformat(start_date))
+        .where(DailyBar.trade_date <= date.fromisoformat(end_date))
+        .order_by(DailyBar.ts_code, DailyBar.trade_date)
+    )
+    all_bars = result.scalars().all()
+
+    if not all_bars:
+        return {"error": "无日线数据，请先执行 /api/t1/sync-data 同步数据"}
+
+    # 按 ts_code 分组构建 DataFrame
+    from collections import defaultdict
+    bars_by_code = defaultdict(list)
+    for bar in all_bars:
+        bars_by_code[bar.ts_code].append({
+            "date": str(bar.trade_date).replace("-", ""),
+            "open": float(bar.open or 0),
+            "high": float(bar.high or 0),
+            "low": float(bar.low or 0),
+            "close": float(bar.close or 0),
+            "volume": bar.volume or 0,
+            "amount": float(bar.amount or 0),
+            "turnover_rate": float(bar.turnover_rate or 0),
+        })
+
+    all_daily_data = {
+        code: pd.DataFrame(rows) for code, rows in bars_by_code.items()
+    }
+
+    # 构建股票信息
+    stocks_result = await db.execute(
+        select(Stock.ts_code, Stock.name, Stock.industry, Stock.list_date)
+        .where(Stock.is_active == True)
+    )
+    stock_info = {
+        row.ts_code: {
+            "name": row.name,
+            "industry": row.industry,
+            "list_date": str(row.list_date) if row.list_date else None,
+        }
+        for row in stocks_result.all()
+    }
+
+    # 获取交易日列表
+    trade_dates_result = await db.execute(
+        select(DailyBar.trade_date)
+        .where(DailyBar.trade_date >= date.fromisoformat(start_date))
+        .where(DailyBar.trade_date <= date.fromisoformat(end_date))
+        .group_by(DailyBar.trade_date)
+        .order_by(DailyBar.trade_date)
+    )
+    trade_dates = [str(row[0]).replace("-", "") for row in trade_dates_result.all()]
+
+    # 运行回测
+    bt_result = bt.run(
+        all_daily_data=all_daily_data,
+        stock_info=stock_info,
+        trade_dates=trade_dates,
+    )
+
+    return {
+        "period": f"{start_date} ~ {end_date}",
+        "initial_cash": bt_result.initial_cash,
+        "final_cash": bt_result.final_cash,
+        "total_return_pct": bt_result.total_return_pct,
+        "annual_return_pct": bt_result.annual_return_pct,
+        "max_drawdown_pct": bt_result.max_drawdown_pct,
+        "sharpe_ratio": bt_result.sharpe_ratio,
+        "profit_factor": bt_result.profit_factor,
+        "total_trades": bt_result.total_trades,
+        "win_count": bt_result.win_count,
+        "win_rate": bt_result.win_rate,
+        "avg_pnl_pct": bt_result.avg_pnl_pct,
+        "max_win_pct": bt_result.max_win_pct,
+        "max_loss_pct": bt_result.max_loss_pct,
+        "trading_days": bt_result.trading_days,
+        "no_trade_days": bt_result.no_trade_days,
+        "monthly_returns": bt_result.monthly_returns,
+        "recent_trades": [
+            {
+                "buy_date": t.buy_date,
+                "sell_date": t.sell_date,
+                "ts_code": t.ts_code,
+                "stock_name": t.stock_name,
+                "buy_price": t.buy_price,
+                "sell_price": t.sell_price,
+                "pnl_pct": t.pnl_pct,
+                "sell_reason": t.sell_reason,
+                "score": t.score,
+                "is_win": t.is_win,
+            }
+            for t in bt_result.trades[-30:]  # 最近30笔
+        ],
+        "equity_curve": bt_result.equity_curve[::max(1, len(bt_result.equity_curve) // 100)],
     }
 
 
