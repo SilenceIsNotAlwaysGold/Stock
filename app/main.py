@@ -140,6 +140,7 @@ from app.routers import recommend, backtest, paper_trading  # noqa: E402
 from app.routers import emotion, strategy_health  # noqa: E402
 from app.routers import aese, auth, config, scheduler  # noqa: E402
 from app.routers import t1_strategy  # noqa: E402
+from app.routers import sector  # noqa: E402
 
 app.include_router(health.router, prefix="/api", tags=["health"])
 app.include_router(auth.router, prefix="/api/auth", tags=["auth"])
@@ -157,6 +158,7 @@ app.include_router(aese.router, prefix="/api/aese", tags=["aese"])
 app.include_router(config.router, prefix="/api/config", tags=["config"])
 app.include_router(scheduler.router, prefix="/api/scheduler", tags=["scheduler"])
 app.include_router(t1_strategy.router, prefix="/api/t1", tags=["t1_strategy"])
+app.include_router(sector.router, prefix="/api/sector", tags=["sector"])
 
 
 @app.get("/")
