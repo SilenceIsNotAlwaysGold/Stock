@@ -20,7 +20,7 @@ class Base(DeclarativeBase):
 
 engine = create_async_engine(
     settings.pg_dsn,
-    echo=settings.DEBUG,
+    echo=False,  # 关闭 SQL 回显：日志去噪 + 降低开销（原 echo=DEBUG 拖慢且刷屏）
     pool_size=10,
     max_overflow=20,
     pool_pre_ping=True,
@@ -46,7 +46,12 @@ _mongo_db = None
 def get_mongo_client() -> AsyncIOMotorClient:
     global _mongo_client
     if _mongo_client is None:
-        _mongo_client = AsyncIOMotorClient(settings.mongo_dsn)
+        _mongo_client = AsyncIOMotorClient(
+            settings.mongo_dsn,
+            serverSelectionTimeoutMS=1000,
+            connectTimeoutMS=1000,
+            socketTimeoutMS=2000,
+        )
     return _mongo_client
 
 
@@ -79,15 +84,19 @@ async def init_db():
             f"PostgreSQL connected: {settings.PG_HOST}:{settings.PG_PORT}/{settings.PG_DATABASE}"
         )
 
-    # MongoDB（可选，失败降级）
-    try:
-        client = get_mongo_client()
-        await client.admin.command("ping")
-        logger.info(
-            f"MongoDB connected: {settings.MONGO_HOST}:{settings.MONGO_PORT}/{settings.MONGO_DATABASE}"
-        )
-    except Exception as e:
-        logger.warning(f"MongoDB connection failed (non-critical, will retry on use): {e}")
+    # MongoDB（可选，后台 fire-and-forget，不阻塞启动）
+    async def _ping_mongo():
+        try:
+            client = get_mongo_client()
+            await client.admin.command("ping")
+            logger.info(
+                f"MongoDB connected: {settings.MONGO_HOST}:{settings.MONGO_PORT}/{settings.MONGO_DATABASE}"
+            )
+        except Exception as e:
+            logger.warning(f"MongoDB unavailable (non-critical): {type(e).__name__}")
+
+    import asyncio as _asyncio
+    _asyncio.create_task(_ping_mongo())
 
     # Redis（可选，失败降级）
     try:

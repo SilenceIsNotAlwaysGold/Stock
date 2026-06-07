@@ -228,10 +228,12 @@ async def run_backtest_simulation(
     db: AsyncSession = Depends(get_db),
 ):
     """
-    T1 v4 策略历史回测模拟。
+    T1 v4 策略历史回测模拟（成交现实化）。
 
     使用当前评分参数(权重/阈值/卖出参数)对历史数据进行完整模拟。
-    包含交易成本（佣金万2.5 + 印花税千1）。
+    无未来函数：选股仅用≤T数据，T日收盘买入，T+1卖出。
+    成本：佣金双边万2.5(最低5元) + 印花税千0.5(仅卖出) + 滑点8bp双边。
+    一字涨停买不进 / 一字跌停卖不出（持仓顺延）。
     """
     from engine.t1_v4.backtester import T1Backtester
     import pandas as pd
@@ -323,6 +325,23 @@ async def run_backtest_simulation(
         "trading_days": bt_result.trading_days,
         "no_trade_days": bt_result.no_trade_days,
         "monthly_returns": bt_result.monthly_returns,
+        # ── 成交现实化新增指标 ──
+        "loss_count": bt_result.loss_count,
+        "avg_win_pct": bt_result.avg_win_pct,
+        "avg_loss_pct": bt_result.avg_loss_pct,
+        "payoff_ratio": bt_result.payoff_ratio,
+        "expectancy_pct": bt_result.expectancy_pct,
+        "avg_holding_days": bt_result.avg_holding_days,
+        "annual_turnover": bt_result.annual_turnover,
+        "cost_drag_pct": bt_result.cost_drag_pct,
+        "sortino_ratio": bt_result.sortino_ratio,
+        "score_ic": bt_result.score_ic,
+        "score_icir": bt_result.score_icir,
+        "stuck_events": bt_result.stuck_events,
+        "live_decay": bt_result.live_decay,
+        "expected_live_return_pct": bt_result.expected_live_return_pct,
+        "event_study": bt_result.event_study,
+        "realism_notes": bt_result.realism_notes,
         "recent_trades": [
             {
                 "buy_date": t.buy_date,
@@ -332,6 +351,9 @@ async def run_backtest_simulation(
                 "buy_price": t.buy_price,
                 "sell_price": t.sell_price,
                 "pnl_pct": t.pnl_pct,
+                "gross_pnl_pct": t.gross_pnl_pct,
+                "cost_pct": t.cost_pct,
+                "hold_days": t.hold_days,
                 "sell_reason": t.sell_reason,
                 "score": t.score,
                 "is_win": t.is_win,
@@ -400,13 +422,19 @@ async def get_dashboard(db: AsyncSession = Depends(get_db)):
 
     today = date.today()
 
+    # 0. 真实数据截止日（最新日线交易日）
+    as_of_row = await db.execute(select(func.max(DailyBar.trade_date)))
+    as_of = as_of_row.scalar()
+
     # 1. 概览统计（复用已有）
     overview = await t1_service.get_overview_stats(db)
 
-    # 2. 今日候选 Top 3
+    # 2. 最新已扫描日的候选 Top 3（无当天扫描则取最近一次）
+    cand_date_row = await db.execute(select(func.max(T1Candidate.scan_date)))
+    cand_date = cand_date_row.scalar() or today
     candidates_result = await db.execute(
         select(T1Candidate)
-        .where(T1Candidate.scan_date == today)
+        .where(T1Candidate.scan_date == cand_date)
         .order_by(desc(T1Candidate.score))
         .limit(3)
     )
@@ -467,6 +495,8 @@ async def get_dashboard(db: AsyncSession = Depends(get_db)):
     ]
 
     return {
+        "as_of": str(as_of) if as_of else None,
+        "candidates_date": str(cand_date),
         "overview": overview,
         "top_candidates": top_candidates,
         "recent_trades": recent_trades,
@@ -561,171 +591,168 @@ async def get_daily_report(
 
 @router.post("/sync-data")
 async def sync_stock_data(
-    top_n: int = Query(settings.T1_TOP_N * 10, description="同步前N只活跃股票的日线数据"),
-    days: int = Query(settings.T1_SCAN_DAYS, description="同步最近N天数据"),
+    days: int = Query(default=30, ge=5, le=90, description="同步最近N天数据"),
     db: AsyncSession = Depends(get_db),
 ):
-    """用 Tushare 同步股票列表和日线数据到数据库"""
+    """
+    按交易日批量同步全市场日线数据。
+
+    策略：每个交易日调用一次 api.daily() + api.daily_basic()，
+    单次拿到全市场所有股票数据，30天约需 60 次请求，速度远快于逐股拉取。
+    """
     import asyncio
     from datetime import datetime, timedelta
     from decimal import Decimal
+
+    from sqlalchemy.dialects.postgresql import insert as pg_insert
 
     from app.config import settings
     from app.models.pg_models import Stock, DailyBar
 
     if not settings.TUSHARE_TOKEN:
-        return {"success": False, "error": "TUSHARE_TOKEN 未配置"}
+        return {"success": False, "error": "TUSHARE_TOKEN 未配置，请先在设置页面保存 Token"}
 
     import tushare as ts
-
     ts.set_token(settings.TUSHARE_TOKEN)
     api = ts.pro_api()
 
-    # 1. 同步股票列表
-    stock_df = await asyncio.to_thread(
-        api.stock_basic,
-        exchange="",
-        list_status="L",
-        fields="ts_code,name,industry,area,market,list_date",
-    )
     def _safe_str(val, default=""):
-        """NaN/None → 空字符串"""
         if val is None or (isinstance(val, float) and val != val):
             return default
         return str(val)
+
+    # 1. 同步股票列表（一次请求，全量）
+    logger.info("开始同步股票列表...")
+    try:
+        stock_df = await asyncio.to_thread(
+            api.stock_basic,
+            exchange="", list_status="L",
+            fields="ts_code,name,industry,area,market,list_date",
+        )
+    except Exception as e:
+        return {"success": False, "error": f"获取股票列表失败: {e}"}
 
     stock_count = 0
     for _, row in stock_df.iterrows():
         existing = await db.get(Stock, row["ts_code"])
         if not existing:
-            db.add(
-                Stock(
-                    ts_code=row["ts_code"],
-                    name=_safe_str(row["name"]),
-                    industry=_safe_str(row.get("industry")),
-                    area=_safe_str(row.get("area")),
-                    market=_safe_str(row.get("market")),
-                    list_date=(
-                        datetime.strptime(row["list_date"], "%Y%m%d").date()
-                        if row.get("list_date")
-                        else None
-                    ),
-                    is_active=True,
-                )
-            )
+            db.add(Stock(
+                ts_code=row["ts_code"],
+                name=_safe_str(row["name"]),
+                industry=_safe_str(row.get("industry")),
+                area=_safe_str(row.get("area")),
+                market=_safe_str(row.get("market")),
+                list_date=(
+                    datetime.strptime(row["list_date"], "%Y%m%d").date()
+                    if row.get("list_date") else None
+                ),
+                is_active=True,
+            ))
             stock_count += 1
     await db.commit()
-    logger.info(f"Synced {stock_count} new stocks (total {len(stock_df)})")
+    logger.info(f"股票列表同步完成: 新增 {stock_count} 只，共 {len(stock_df)} 只")
 
-    # 2. 同步日线数据 - 取成交额最大的 top_n 只
-    end_date_str = date.today().strftime("%Y%m%d")
-    start_date_str = (date.today() - timedelta(days=days)).strftime("%Y%m%d")
+    # 2. 获取交易日历
+    end_dt = date.today()
+    start_dt = end_dt - timedelta(days=days + 10)  # 多取几天，过滤非交易日
+    end_str = end_dt.strftime("%Y%m%d")
+    start_str = start_dt.strftime("%Y%m%d")
 
-    # 获取最近交易日活跃股票
     try:
-        daily_basic = await asyncio.to_thread(
-            api.daily_basic,
-            trade_date=end_date_str,
-            fields="ts_code,turnover_rate,volume_ratio",
+        cal_df = await asyncio.to_thread(
+            api.trade_cal,
+            exchange="SSE", start_date=start_str, end_date=end_str,
+            fields="cal_date,is_open",
         )
-        if daily_basic is None or daily_basic.empty:
-            # 尝试前一个交易日
-            prev_date = (date.today() - timedelta(days=1)).strftime("%Y%m%d")
-            daily_basic = await asyncio.to_thread(
-                api.daily_basic,
-                trade_date=prev_date,
-                fields="ts_code,turnover_rate,volume_ratio",
-            )
+        trade_dates = (
+            cal_df[cal_df["is_open"] == 1]["cal_date"]
+            .sort_values(ascending=False)
+            .head(days)
+            .tolist()
+        )
     except Exception:
-        daily_basic = None
+        # 降级：自己生成日期（排除周末）
+        trade_dates = []
+        cur = end_dt
+        while len(trade_dates) < days:
+            if cur.weekday() < 5:
+                trade_dates.append(cur.strftime("%Y%m%d"))
+            cur -= timedelta(days=1)
 
-    if daily_basic is not None and not daily_basic.empty:
-        active_codes = daily_basic.nlargest(top_n, "turnover_rate")["ts_code"].tolist()
-    else:
-        active_codes = stock_df.head(top_n)["ts_code"].tolist()
+    logger.info(f"待同步交易日: {len(trade_dates)} 天 ({trade_dates[-1]} ~ {trade_dates[0]})")
 
+    # 3. 按交易日批量拉取（每天 2 次请求：daily + daily_basic）
     bar_count = 0
     errors = []
-    for i, code in enumerate(active_codes):
-        try:
-            bars = await asyncio.to_thread(
-                ts.pro_bar,
-                ts_code=code,
-                start_date=start_date_str,
-                end_date=end_date_str,
-                adj="qfq",
-            )
-            if bars is None or bars.empty:
-                continue
 
-            # 获取该股票的 daily_basic 数据（含换手率、量比）
+    for i, trade_date in enumerate(trade_dates):
+        try:
+            # OHLCV
+            day_df = await asyncio.to_thread(
+                api.daily,
+                trade_date=trade_date,
+                fields="ts_code,trade_date,open,high,low,close,vol,amount",
+            )
+            # 换手率
             try:
-                basic = await asyncio.to_thread(
+                basic_df = await asyncio.to_thread(
                     api.daily_basic,
-                    ts_code=code,
-                    start_date=start_date_str,
-                    end_date=end_date_str,
+                    trade_date=trade_date,
                     fields="ts_code,trade_date,turnover_rate,volume_ratio",
                 )
-                basic_map = {}
-                if basic is not None and not basic.empty:
-                    for _, br in basic.iterrows():
-                        basic_map[br["trade_date"]] = {
-                            "turnover_rate": float(br.get("turnover_rate", 0) or 0),
-                            "volume_ratio": float(br.get("volume_ratio", 0) or 0),
-                        }
+                turnover_map = {}
+                if basic_df is not None and not basic_df.empty:
+                    for _, br in basic_df.iterrows():
+                        turnover_map[br["ts_code"]] = float(br.get("turnover_rate") or 0)
             except Exception:
-                basic_map = {}
+                turnover_map = {}
 
-            for _, b in bars.iterrows():
-                td = datetime.strptime(b["trade_date"], "%Y%m%d").date()
-                from sqlalchemy import and_
+            if day_df is None or day_df.empty:
+                logger.warning(f"  {trade_date}: 无数据（可能是非交易日）")
+                continue
 
-                exists = await db.scalar(
-                    select(func.count(DailyBar.id)).where(
-                        and_(DailyBar.ts_code == code, DailyBar.trade_date == td)
-                    )
+            td = datetime.strptime(trade_date, "%Y%m%d").date()
+
+            # 批量 upsert（ON CONFLICT DO NOTHING 跳过已有记录）
+            rows = []
+            for _, b in day_df.iterrows():
+                rows.append({
+                    "ts_code":      b["ts_code"],
+                    "trade_date":   td,
+                    "open":         Decimal(str(b.get("open") or 0)),
+                    "high":         Decimal(str(b.get("high") or 0)),
+                    "low":          Decimal(str(b.get("low") or 0)),
+                    "close":        Decimal(str(b.get("close") or 0)),
+                    "volume":       int(b.get("vol") or 0),
+                    "amount":       Decimal(str(b.get("amount") or 0)),
+                    "turnover_rate": turnover_map.get(b["ts_code"], 0.0),
+                })
+
+            if rows:
+                stmt = pg_insert(DailyBar).values(rows)
+                stmt = stmt.on_conflict_do_update(
+                    index_elements=["ts_code", "trade_date"],
+                    set_={"turnover_rate": stmt.excluded.turnover_rate},
                 )
-                extra = basic_map.get(b["trade_date"], {})
-                if not exists:
-                    db.add(
-                        DailyBar(
-                            ts_code=code,
-                            trade_date=td,
-                            open=Decimal(str(b.get("open", 0) or 0)),
-                            high=Decimal(str(b.get("high", 0) or 0)),
-                            low=Decimal(str(b.get("low", 0) or 0)),
-                            close=Decimal(str(b.get("close", 0) or 0)),
-                            volume=int(b.get("vol", 0) or 0),
-                            amount=Decimal(str(b.get("amount", 0) or 0)),
-                            turnover_rate=extra.get("turnover_rate", 0),
-                        )
-                    )
-                    bar_count += 1
-                elif extra.get("turnover_rate", 0) > 0:
-                    # 更新已有记录的换手率
-                    from sqlalchemy import update as sql_update
+                result = await db.execute(stmt)
+                bar_count += len(rows)
+                await db.commit()
+                logger.info(f"  {trade_date}: {len(rows)} 条 ({'inserted/updated'})")
 
-                    await db.execute(
-                        sql_update(DailyBar)
-                        .where(
-                            and_(DailyBar.ts_code == code, DailyBar.trade_date == td)
-                        )
-                        .values(turnover_rate=extra["turnover_rate"])
-                    )
-            await db.commit()
-            # Tushare 限流
-            if (i + 1) % 10 == 0:
+            # 限流：每 5 个交易日暂停一次
+            if (i + 1) % 5 == 0:
                 await asyncio.sleep(1)
+
         except Exception as e:
-            errors.append(f"{code}: {str(e)[:50]}")
+            errors.append(f"{trade_date}: {str(e)[:80]}")
+            logger.error(f"  {trade_date} 同步失败: {e}")
             continue
 
     return {
         "success": True,
         "stocks_synced": stock_count,
         "stocks_total": len(stock_df),
+        "trade_dates_synced": len(trade_dates) - len(errors),
         "bars_synced": bar_count,
-        "active_codes_count": len(active_codes),
         "errors": errors[:10],
     }

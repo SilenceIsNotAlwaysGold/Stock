@@ -10,6 +10,7 @@ from fastapi import APIRouter, Query
 from engine.sector_heat.heat_scorer import rank_sectors
 from engine.sector_heat.llm_analyst import analyze_sectors
 from engine.sector_heat.models import SectorRecommendation, SectorReport
+from engine.sector_heat.news_fetcher import fetch_stock_news, fetch_telegraph_news
 from engine.sector_heat.stock_picker import pick_stocks
 
 logger = logging.getLogger(__name__)
@@ -112,3 +113,45 @@ async def sector_recommend(
         "total_sectors": len(recommendations),
         "recommendations": recommendations,
     }
+
+
+@router.get("/news/stock/{ts_code}")
+async def stock_news(
+    ts_code: str,
+    days: int = Query(default=7, ge=1, le=30, description="近 N 天"),
+    limit: int = Query(default=10, ge=1, le=30),
+):
+    """个股近 N 天新闻（来自东财）"""
+    df = await fetch_stock_news(ts_code, days=days)
+    if df is None or df.empty:
+        return {"ts_code": ts_code, "items": []}
+    items = []
+    for _, row in df.head(limit).iterrows():
+        items.append({
+            "title": str(row.get("title", "")),
+            "content": str(row.get("content", ""))[:400],
+            "pub_time": str(row.get("timestamp", "")),
+            "source": str(row.get("source", "")),
+            "url": str(row.get("url", "")),
+        })
+    return {"ts_code": ts_code, "items": items}
+
+
+@router.get("/news/telegraph")
+async def market_telegraph(
+    hours: int = Query(default=24, ge=1, le=72),
+    limit: int = Query(default=20, ge=1, le=50),
+):
+    """财联社近 N 小时电报"""
+    df = await fetch_telegraph_news(hours=hours)
+    if df is None or df.empty:
+        return {"items": []}
+    df = df.sort_values("timestamp", ascending=False)
+    items = []
+    for _, row in df.head(limit).iterrows():
+        items.append({
+            "title": str(row.get("title", "")),
+            "content": str(row.get("content", ""))[:300],
+            "pub_time": str(row.get("timestamp", "")),
+        })
+    return {"items": items}

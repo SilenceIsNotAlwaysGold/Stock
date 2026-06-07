@@ -72,8 +72,8 @@ class Settings(BaseSettings):
 
     # T1 Strategy — 基础参数
     T1_TOP_N: int = 2
-    T1_MARKET_SAFE_THRESHOLD: float = 8.0
-    T1_MIN_TOTAL_SCORE: float = 55.0
+    T1_MARKET_SAFE_THRESHOLD: float = 7.0
+    T1_MIN_TOTAL_SCORE: float = 40.0
     T1_SCAN_DAYS: int = 30
 
     # T1 Strategy — 交易权限（排除的板块前缀，逗号分隔）
@@ -93,6 +93,11 @@ class Settings(BaseSettings):
     T1_CONSECUTIVE_LOSS_REDUCE: float = 0.50
     T1_MAX_DRAWDOWN_PCT: float = 0.15
     T1_DRAWDOWN_PAUSE_DAYS: int = 3
+
+    # Notification — 推送配置
+    FEISHU_WEBHOOK: str = ""        # 飞书机器人 webhook URL
+    DINGTALK_WEBHOOK: str = ""      # 钉钉机器人 webhook URL
+    NOTIFY_DAILY_PUSH: bool = True  # 是否启用每日 8:30 推送
 
     @property
     def cors_origins_list(self) -> List[str]:

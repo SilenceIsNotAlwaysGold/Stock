@@ -82,25 +82,68 @@ async def scan_candidates(
     try:
         update_progress(task_id, current=0, message="批量加载日线数据...")
 
-        # ── 批量加载所有有日线数据的股票（一次查询，消除 N+1）──
+        # ── 批量加载近 60 个日历天日线数据（列级查询，跳过 ORM 实例化）──
         from sqlalchemy import text
+        from datetime import timedelta
 
-        all_bars_result = await db.execute(
-            select(DailyBar)
+        cutoff = scan_date - timedelta(days=60)  # 覆盖约 30 个交易日
+        rows_result = await db.execute(
+            select(
+                DailyBar.ts_code,
+                DailyBar.trade_date,
+                DailyBar.open,
+                DailyBar.high,
+                DailyBar.low,
+                DailyBar.close,
+                DailyBar.volume,
+                DailyBar.amount,
+                DailyBar.turnover_rate,
+            )
+            .where(DailyBar.trade_date >= cutoff)
             .order_by(DailyBar.ts_code, DailyBar.trade_date.desc())
         )
-        all_bars = all_bars_result.scalars().all()
+        raw_rows = rows_result.fetchall()
 
-        # 按 ts_code 分组，每只取最近 30 条
+        # 按 ts_code 分组，每只取最近 30 条（行已按 date desc 排序）
         bars_by_code: Dict[str, list] = {}
-        for bar in all_bars:
-            code = bar.ts_code
+        for row in raw_rows:
+            code = row.ts_code
             if code not in bars_by_code:
                 bars_by_code[code] = []
             if len(bars_by_code[code]) < 30:
-                bars_by_code[code].append(bar)
+                bars_by_code[code].append(row)
 
         logger.info(f"T1 v4 scan: loaded bars for {len(bars_by_code)} stocks in 1 query")
+
+        # ── 从已加载的 bars 计算市场统计（用于 MarketScorer）──
+        up_count = 0
+        down_count = 0
+        total_amount_sum = 0.0
+        for bars_list in bars_by_code.values():
+            if len(bars_list) < 2:
+                continue
+            today_close = float(bars_list[0].close or 0)
+            prev_close = float(bars_list[1].close or 0) or 0.01
+            total_amount_sum += float(bars_list[0].amount or 0)
+            change = (today_close - prev_close) / prev_close
+            if change > 0.005:
+                up_count += 1
+            elif change < -0.005:
+                down_count += 1
+
+        # amount 单位：千元；转换为亿元
+        total_amount_亿 = total_amount_sum / 100_000.0
+
+        computed_market_stats = {
+            "up_count": up_count,
+            "down_count": down_count,
+            "total_amount": total_amount_亿,
+        }
+        logger.info(
+            f"T1 v4 scan: market stats — up={up_count}, down={down_count}, "
+            f"amount={total_amount_亿:.0f}亿"
+        )
+
         update_progress(task_id, current=1, message="计算板块排名...")
 
         # ── 预计算板块排名 + 板块涨停数 ──
@@ -200,10 +243,10 @@ async def scan_candidates(
                 "industry_pe_median": None,
             }
 
-        # 全局 context
+        # 全局 context（使用从 bars 计算的市场统计数据）
         global_context = {
             "index_df": None,
-            "market_stats": None,
+            "market_stats": computed_market_stats,
         }
 
         update_progress(task_id, current=3, message=f"评分排序 {len(stock_pool)} 只...")
@@ -459,7 +502,7 @@ async def check_and_sell_positions(db: AsyncSession) -> List[Dict]:
         if next_open <= 0:
             continue
 
-        # 用 SellEngineV2 做决策
+        # 用 SellEngineV2 做决策（prev_close 缺省 = buy_price，正常 T+1 即买入日收盘）
         decision = sell_engine.decide(
             buy_price=buy_price,
             next_open=next_open,
@@ -467,6 +510,17 @@ async def check_and_sell_positions(db: AsyncSession) -> List[Dict]:
             next_low=next_low,
             next_close=next_close,
         )
+
+        # 一字涨/跌停封死无法成交 → 继续持有，不执行卖出
+        if decision.stuck or decision.sell_price <= 0:
+            results.append({
+                "position_id": pos.id,
+                "ts_code": getattr(pos, "ts_code", None),
+                "action": "hold",
+                "reason": decision.sell_reason,
+                "detail": decision.description,
+            })
+            continue
 
         sell_result = await execute_morning_sell(
             db, pos.id, decision.sell_price, decision.sell_reason

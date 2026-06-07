@@ -1,12 +1,18 @@
 """推荐系统 API"""
 
 import logging
-from datetime import datetime, timedelta
+from collections import defaultdict
+from datetime import date, datetime, timedelta
 from typing import Dict, List, Optional
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, Depends, Query
+from sqlalchemy import func, select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
+from app.core.database import get_db
+from app.models.pg_models import DailyBar, Stock
+from app.services import news_reco
 from dataflows.source_manager import DataSourceManager
 from dataflows.providers import TushareProvider, AKShareProvider, BaoStockProvider
 from engine.registry import StrategyRegistry
@@ -14,6 +20,19 @@ from engine.signal_aggregator import SignalAggregator
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
+
+
+@router.get("/news-driven")
+async def news_driven_recommendations(
+    top_n: int = Query(15, ge=1, le=50),
+    hours: int = Query(24, ge=1, le=72),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    消息面驱动推荐：财联社近 N 小时电报 → 热门板块 → 受影响个股
+    （新闻热度 × 量化强度排序）。
+    """
+    return await news_reco.recommend_by_news(db, top_n=top_n, hours=hours)
 
 _recommendations: Dict[str, List] = {}
 
@@ -39,17 +58,28 @@ STOCK_NAMES: Dict[str, str] = {
 
 @router.get("/today")
 async def today_recommendations(
-    top_n: int = Query(10, ge=1, le=50),
-    stock_codes: Optional[List[str]] = Query(None),
+    top_n: int = Query(20, ge=1, le=50),
+    refresh: bool = Query(False, description="强制重算"),
+    db: AsyncSession = Depends(get_db),
 ):
-    """获取今日推荐"""
+    """
+    今日推荐（全市场 DB 多策略共振，0-100 评分，仅出可操作信号）。
+    结果按日缓存；refresh=true 强制重算。
+    """
     today = datetime.now().strftime("%Y-%m-%d")
-    if today in _recommendations:
-        return {"date": today, "recommendations": _recommendations[today][:top_n]}
+    as_of_row = await db.execute(select(func.max(DailyBar.trade_date)))
+    as_of = as_of_row.scalar()
+    as_of_s = str(as_of) if as_of else today
 
-    # 生成推荐
-    recs = await _generate_recommendations(stock_codes, top_n)
-    return {"date": today, "recommendations": recs}
+    if not refresh and today in _recommendations:
+        return {"date": today, "as_of": as_of_s,
+                "count": len(_recommendations[today]),
+                "recommendations": _recommendations[today][:top_n]}
+
+    recs = await _generate_recommendations_db(db)
+    _recommendations[today] = recs
+    return {"date": today, "as_of": as_of_s, "count": len(recs),
+            "recommendations": recs[:top_n]}
 
 
 @router.get("/history")
@@ -60,6 +90,97 @@ async def history_recommendations(
     if date and date in _recommendations:
         return {"date": date, "recommendations": _recommendations[date]}
     return {"dates": list(_recommendations.keys())}
+
+
+_EXCL_PREFIX = ("688", "300", "301", "8", "4", "920")
+
+
+async def _generate_recommendations_db(db: AsyncSession) -> List:
+    """
+    全市场 DB 多策略共振推荐。
+    流程：取在册可交易股 → 近 80 日列级日线 → 按流动性截取候选
+         → SignalAggregator 多策略 → 0-100 评分 → 仅留可操作(偏多)信号。
+    """
+    import pandas as pd
+
+    StrategyRegistry.auto_discover()
+    aggregator = SignalAggregator()
+
+    srows = await db.execute(
+        select(Stock.ts_code, Stock.name)
+        .where(Stock.is_active == True)
+    )
+    name_map = {}
+    for r in srows.all():
+        code = r.ts_code.split(".")[0]
+        nm = r.name or ""
+        if code.startswith(_EXCL_PREFIX) or "ST" in nm.upper():
+            continue
+        name_map[r.ts_code] = nm
+    if not name_map:
+        return []
+
+    rows = await db.execute(
+        select(DailyBar.ts_code, DailyBar.trade_date, DailyBar.open,
+               DailyBar.high, DailyBar.low, DailyBar.close,
+               DailyBar.volume, DailyBar.amount)
+        .where(DailyBar.ts_code.in_(list(name_map.keys())))
+        .order_by(DailyBar.ts_code, DailyBar.trade_date)
+    )
+    by_code: Dict[str, list] = defaultdict(list)
+    for r in rows.all():
+        by_code[r.ts_code].append(r)
+
+    # 流动性预筛：按近 5 日平均成交额排序，取前 1500 只控制计算量
+    liq = []
+    for code, recs in by_code.items():
+        if len(recs) < 30:
+            continue
+        amt5 = [float(x.amount or 0) for x in recs[-5:]]
+        liq.append((code, sum(amt5) / max(len(amt5), 1)))
+    liq.sort(key=lambda x: -x[1])
+    candidates = [c for c, _ in liq[:1500]]
+
+    results = []
+    for code in candidates:
+        recs = by_code[code][-80:]
+        df = pd.DataFrame([{
+            "date": str(x.trade_date).replace("-", ""),
+            "open": float(x.open or 0), "high": float(x.high or 0),
+            "low": float(x.low or 0), "close": float(x.close or 0),
+            "volume": float(x.volume or 0), "amount": float(x.amount or 0),
+        } for x in recs])
+        if df["close"].iloc[-1] <= 0:
+            continue
+        try:
+            agg = aggregator.aggregate(df)
+        except Exception as e:
+            logger.debug(f"aggregate {code} 失败: {e}")
+            continue
+
+        buy_c, sell_c = agg["buy_count"], agg["sell_count"]
+        # 仅保留可操作（偏多）信号
+        if not (agg["action"] == "BUY" or (buy_c >= 2 and buy_c > sell_c)):
+            continue
+        # 0-100 综合评分：基准50 + 共振方向强度 + 跨类别共振 + 净买入
+        score100 = 50 + agg["score"] * 45 + \
+            (8 if agg["resonance"]["buy_resonance"] else 0) + \
+            (buy_c - sell_c) * 2.5
+        score100 = round(max(0.0, min(100.0, score100)), 1)
+        chg = 0.0
+        if len(df) >= 2 and df["close"].iloc[-2] > 0:
+            chg = (df["close"].iloc[-1] - df["close"].iloc[-2]) / df["close"].iloc[-2] * 100
+        results.append({
+            "ts_code": code, "name": name_map.get(code, ""),
+            "score": score100, "action": agg["action"],
+            "buy_count": buy_c, "sell_count": sell_c,
+            "resonance": agg["resonance"]["buy_resonance"],
+            "today_chg_pct": round(chg, 2),
+            "signals": agg["signals"],
+        })
+
+    results.sort(key=lambda x: x["score"], reverse=True)
+    return results
 
 
 async def _generate_recommendations(

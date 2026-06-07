@@ -29,6 +29,9 @@ async def lifespan(app: FastAPI):
         level=logging.DEBUG if settings.DEBUG else logging.INFO,
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
     )
+    # 压制噪音库
+    for noisy in ("pymongo", "motor", "asyncio", "apscheduler.executors"):
+        logging.getLogger(noisy).setLevel(logging.WARNING)
     logger.info(f"Starting {settings.APP_NAME}...")
 
     await init_db()
@@ -141,6 +144,7 @@ from app.routers import emotion, strategy_health  # noqa: E402
 from app.routers import aese, auth, config, scheduler  # noqa: E402
 from app.routers import t1_strategy  # noqa: E402
 from app.routers import sector  # noqa: E402
+from app.routers import styles  # noqa: E402
 
 app.include_router(health.router, prefix="/api", tags=["health"])
 app.include_router(auth.router, prefix="/api/auth", tags=["auth"])
@@ -159,15 +163,55 @@ app.include_router(config.router, prefix="/api/config", tags=["config"])
 app.include_router(scheduler.router, prefix="/api/scheduler", tags=["scheduler"])
 app.include_router(t1_strategy.router, prefix="/api/t1", tags=["t1_strategy"])
 app.include_router(sector.router, prefix="/api/sector", tags=["sector"])
+app.include_router(styles.router, prefix="/api/styles", tags=["styles"])
 
 
-@app.get("/")
-async def root():
+@app.get("/api")
+async def api_root():
     return {
         "name": settings.APP_NAME,
         "version": "0.1.0",
         "status": "running",
     }
+
+
+# ── 前端静态托管（单进程，免独立 dev server）──
+from pathlib import Path  # noqa: E402
+from fastapi.responses import FileResponse  # noqa: E402
+from fastapi.staticfiles import StaticFiles  # noqa: E402
+
+_DIST = Path(__file__).resolve().parent.parent / "frontend" / "dist"
+_INDEX = _DIST / "index.html"
+
+if _DIST.is_dir():
+    if (_DIST / "assets").is_dir():
+        app.mount("/assets", StaticFiles(directory=str(_DIST / "assets")),
+                  name="assets")
+
+    @app.get("/")
+    async def _spa_root():
+        return FileResponse(str(_INDEX))
+
+    @app.get("/{full_path:path}")
+    async def _spa_fallback(full_path: str):
+        # API / 文档路径不回退（交还框架返回 404）
+        if full_path.startswith(("api", "docs", "openapi.json", "redoc",
+                                 "assets")):
+            from fastapi import HTTPException
+            raise HTTPException(status_code=404, detail="Not Found")
+        # 命中 dist 下真实静态文件则直出，否则回退 index.html（前端路由）
+        candidate = _DIST / full_path
+        if candidate.is_file():
+            return FileResponse(str(candidate))
+        return FileResponse(str(_INDEX))
+else:
+    @app.get("/")
+    async def root():
+        return {
+            "name": settings.APP_NAME,
+            "version": "0.1.0",
+            "status": "running (frontend/dist 未构建)",
+        }
 
 
 if __name__ == "__main__":

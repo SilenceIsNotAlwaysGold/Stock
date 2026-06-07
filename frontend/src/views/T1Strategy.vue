@@ -206,23 +206,50 @@
   </div>
 
   <!-- 候选股详情弹窗 -->
-  <el-dialog v-model="showDetail" :title="`${selectedCandidate?.stock_name} (${selectedCandidate?.ts_code})`" width="500px" destroy-on-close>
+  <el-dialog v-model="showDetail" :title="`${selectedCandidate?.stock_name} (${selectedCandidate?.ts_code})`" width="900px" destroy-on-close>
     <template v-if="selectedCandidate">
-      <div style="text-align: center; margin-bottom: 16px">
-        <span style="font-size: 32px; font-weight: 700" :style="{ color: (selectedCandidate.score ?? 0) >= 50 ? '#67c23a' : '#e6a23c' }">
-          {{ selectedCandidate.score?.toFixed(1) }}
-        </span>
-        <span style="font-size: 14px; color: #909399"> / 100 分</span>
-      </div>
-      <div ref="radarChartRef" style="width: 350px; height: 300px; margin: 0 auto"></div>
-      <el-descriptions :column="2" size="small" border style="margin-top: 16px">
-        <el-descriptions-item label="技术面">{{ selectedCandidate.tech_score?.toFixed(1) }} / 30</el-descriptions-item>
-        <el-descriptions-item label="资金面">{{ selectedCandidate.capital_score?.toFixed(1) }} / 25</el-descriptions-item>
-        <el-descriptions-item label="基本面">{{ selectedCandidate.fundamental_score?.toFixed(1) }} / 15</el-descriptions-item>
-        <el-descriptions-item label="板块面">{{ selectedCandidate.sector_score?.toFixed(1) }} / 15</el-descriptions-item>
-        <el-descriptions-item label="市场面">{{ selectedCandidate.market_score?.toFixed(1) }} / 15</el-descriptions-item>
-        <el-descriptions-item label="收盘价">{{ selectedCandidate.close_price }}</el-descriptions-item>
-      </el-descriptions>
+      <el-tabs v-model="detailTab" @tab-change="onDetailTabChange">
+        <el-tab-pane label="评分雷达" name="radar">
+          <div style="text-align: center; margin-bottom: 12px">
+            <span style="font-size: 32px; font-weight: 700" :style="{ color: (selectedCandidate.score ?? 0) >= 50 ? '#67c23a' : '#e6a23c' }">
+              {{ selectedCandidate.score?.toFixed(1) }}
+            </span>
+            <span style="font-size: 14px; color: #909399"> / 100 分</span>
+          </div>
+          <div ref="radarChartRef" style="width: 380px; height: 320px; margin: 0 auto"></div>
+          <el-descriptions :column="3" size="small" border style="margin-top: 16px">
+            <el-descriptions-item label="技术面">{{ selectedCandidate.tech_score?.toFixed(1) }} / 30</el-descriptions-item>
+            <el-descriptions-item label="资金面">{{ selectedCandidate.capital_score?.toFixed(1) }} / 25</el-descriptions-item>
+            <el-descriptions-item label="基本面">{{ selectedCandidate.fundamental_score?.toFixed(1) }} / 15</el-descriptions-item>
+            <el-descriptions-item label="板块面">{{ selectedCandidate.sector_score?.toFixed(1) }} / 15</el-descriptions-item>
+            <el-descriptions-item label="市场面">{{ selectedCandidate.market_score?.toFixed(1) }} / 15</el-descriptions-item>
+            <el-descriptions-item label="收盘价">{{ selectedCandidate.close_price }}</el-descriptions-item>
+          </el-descriptions>
+        </el-tab-pane>
+
+        <el-tab-pane label="日 K 走势" name="kline">
+          <div v-loading="klineLoading">
+            <div ref="klineChartRef" style="width: 100%; height: 420px"></div>
+          </div>
+        </el-tab-pane>
+
+        <el-tab-pane label="相关新闻" name="news">
+          <div v-loading="newsLoading" style="min-height: 200px">
+            <el-empty v-if="!newsItems.length && !newsLoading" description="近期暂无相关新闻" />
+            <div v-for="(n, i) in newsItems" :key="i" class="news-item">
+              <div class="news-title">
+                <el-link v-if="n.url" :href="n.url" target="_blank" type="primary">{{ n.title }}</el-link>
+                <span v-else>{{ n.title }}</span>
+              </div>
+              <div class="news-meta">
+                <span style="color:#909399">{{ formatNewsTime(n.pub_time) }}</span>
+                <el-tag v-if="n.source" size="small" effect="plain" style="margin-left:8px">{{ n.source }}</el-tag>
+              </div>
+              <div class="news-content">{{ n.content }}</div>
+            </div>
+          </div>
+        </el-tab-pane>
+      </el-tabs>
     </template>
   </el-dialog>
 </template>
@@ -254,13 +281,95 @@ const candidatePageSize = ref(10)
 const showDetail = ref(false)
 const selectedCandidate = ref<T1Candidate | null>(null)
 const radarChartRef = ref<HTMLElement | null>(null)
+const klineChartRef = ref<HTMLElement | null>(null)
+const detailTab = ref('radar')
+const klineLoading = ref(false)
+const newsLoading = ref(false)
+const newsItems = ref<any[]>([])
+let klineChartInstance: any = null
+
+function formatNewsTime(s: string) {
+  if (!s) return ''
+  return s.length > 16 ? s.substring(0, 16).replace('T', ' ') : s
+}
+
+async function loadKline(tsCode: string) {
+  klineLoading.value = true
+  try {
+    const data: any = await (await fetch(`/api/stocks/${tsCode}/daily?days=60`)).json()
+    if (!Array.isArray(data) || !data.length) return
+    const sorted = [...data].sort((a: any, b: any) => a.trade_date.localeCompare(b.trade_date))
+    const dates = sorted.map((d: any) => d.trade_date)
+    // [open, close, low, high]
+    const ohlc = sorted.map((d: any) => [d.open, d.close, d.low, d.high])
+    const vols = sorted.map((d: any) => d.volume)
+    nextTick(() => {
+      if (!klineChartRef.value) return
+      if (klineChartInstance) klineChartInstance.dispose()
+      klineChartInstance = echarts.init(klineChartRef.value, 'quant')
+      klineChartInstance.setOption({
+        tooltip: { trigger: 'axis', axisPointer: { type: 'cross' } },
+        legend: { data: ['日K', '成交量'] },
+        grid: [
+          { left: '8%', right: '4%', top: '8%', height: '60%' },
+          { left: '8%', right: '4%', top: '75%', height: '18%' },
+        ],
+        xAxis: [
+          { type: 'category', data: dates, scale: true, boundaryGap: false, axisLine: { onZero: false } },
+          { type: 'category', gridIndex: 1, data: dates, axisLabel: { show: false } },
+        ],
+        yAxis: [
+          { scale: true, splitArea: { show: true } },
+          { scale: true, gridIndex: 1, splitNumber: 2, axisLabel: { show: false } },
+        ],
+        dataZoom: [
+          { type: 'inside', xAxisIndex: [0, 1], start: 50, end: 100 },
+          { type: 'slider', xAxisIndex: [0, 1], top: '95%', start: 50, end: 100 },
+        ],
+        series: [
+          {
+            name: '日K', type: 'candlestick', data: ohlc,
+            itemStyle: { color: '#ec0000', color0: '#00da3c', borderColor: '#8a0000', borderColor0: '#008f28' },
+          },
+          { name: '成交量', type: 'bar', xAxisIndex: 1, yAxisIndex: 1, data: vols, itemStyle: { color: '#7fbe9e' } },
+        ],
+      })
+    })
+  } catch (e) {
+    ElMessage.error('K线加载失败')
+  } finally {
+    klineLoading.value = false
+  }
+}
+
+async function loadStockNews(tsCode: string) {
+  newsLoading.value = true
+  newsItems.value = []
+  try {
+    const r: any = await (await fetch(`/api/sector/news/stock/${tsCode}?days=14&limit=15`)).json()
+    newsItems.value = r.items || []
+  } catch (e) {
+    ElMessage.error('新闻加载失败')
+  } finally {
+    newsLoading.value = false
+  }
+}
+
+function onDetailTabChange(tab: string) {
+  if (!selectedCandidate.value) return
+  if (tab === 'kline') loadKline(selectedCandidate.value.ts_code)
+  else if (tab === 'news') loadStockNews(selectedCandidate.value.ts_code)
+}
 
 function openDetail(row: T1Candidate) {
   selectedCandidate.value = row
   showDetail.value = true
+  detailTab.value = 'radar'
+  newsItems.value = []
+  if (klineChartInstance) { klineChartInstance.dispose(); klineChartInstance = null }
   nextTick(() => {
     if (radarChartRef.value) {
-      const chart = echarts.init(radarChartRef.value)
+      const chart = echarts.init(radarChartRef.value, 'quant')
       chart.setOption({
         radar: {
           indicator: [
@@ -441,4 +550,9 @@ onMounted(() => { loadStats(); loadCandidates(); loadPositions(); loadTrades() }
 :deep(.high-score-row) { background-color: #fdf6ec !important; }
 :deep(.el-table .high-score-row:hover > td) { background-color: #faecd8 !important; }
 :deep(.el-tabs__item) { font-size: 14px; font-weight: 500; }
+.news-item { padding: 12px 0; border-bottom: 1px solid #ebeef5; }
+.news-item:last-child { border-bottom: none; }
+.news-title { font-size: 14px; font-weight: 600; margin-bottom: 4px; }
+.news-meta { font-size: 12px; margin-bottom: 6px; }
+.news-content { font-size: 13px; color: #606266; line-height: 1.6; }
 </style>

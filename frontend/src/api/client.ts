@@ -73,9 +73,12 @@ api.interceptors.response.use(
       }
     }
 
+    // 轮询类接口（多 Agent 报告）由调用方自行处理错误，避免全局刷屏
+    const isPollEndpoint = originalRequest?.url?.includes('/analysis/report/')
+
     // 提取错误信息
     const msg = extractErrorMessage(err)
-    if (status !== 401) {
+    if (status !== 401 && !isPollEndpoint) {
       ElMessage.error(msg)
     }
 

@@ -6,17 +6,24 @@ T1 v4 卖出引擎 v2
 """
 
 from dataclasses import dataclass
-from typing import Optional
+
+from engine.t1_v4.market_rules import (
+    is_one_word_limit_down,
+    is_one_word_limit_up,
+    limit_down_price,
+    limit_up_price,
+)
 
 
 @dataclass
 class SellDecision:
     """卖出决策结果"""
-    sell_price: float          # 卖出价格
+    sell_price: float          # 卖出价格（stuck 时为 0，由回测器顺延持有）
     sell_reason: str           # 决策原因标签
-    pnl_pct: float            # 盈亏百分比（小数，0.03 表示 3%）
-    phase: int                 # 哪个阶段触发的 (1-4)
+    pnl_pct: float            # 盈亏百分比（小数，0.03 表示 3%；未含成本）
+    phase: int                 # 哪个阶段触发的 (1-4)；0 = 无法成交需顺延
     description: str           # 人类可读描述
+    stuck: bool = False        # True = 一字板无法成交，回测器应继续持有到次日
 
 
 class SellEngineV2:
@@ -44,15 +51,19 @@ class SellEngineV2:
         phase2_stop_loss: float = -0.03,    # 盘中止损 -3%（容忍日内波动）
         # 阶段 3 参数
         phase3_stop_loss: float = -0.025,   # 观察期止损 -2.5%
-        # 涨停阈值
-        limit_up_pct: float = 0.098,
+        # 涨跌停幅度（板块限制，主板 0.10）
+        limit_pct: float = 0.10,
+        # 止盈/止损同日均可达时的路径假设：True=悲观(假设先触止损)
+        # 关闭未来函数乐观偏差的关键开关
+        ambiguous_pessimistic: bool = True,
     ):
         self.phase1_take_profit = phase1_take_profit
         self.phase1_stop_loss = phase1_stop_loss
         self.phase2_take_profit = phase2_take_profit
         self.phase2_stop_loss = phase2_stop_loss
         self.phase3_stop_loss = phase3_stop_loss
-        self.limit_up_pct = limit_up_pct
+        self.limit_pct = limit_pct
+        self.ambiguous_pessimistic = ambiguous_pessimistic
 
     def decide(
         self,
@@ -61,68 +72,114 @@ class SellEngineV2:
         next_high: float,
         next_low: float,
         next_close: float,
+        prev_close: float = None,
     ) -> SellDecision:
         """
-        基于次日 OHLCV 做卖出决策
+        基于卖出日 OHLCV 做卖出决策
 
         用日线数据近似分时逻辑：
         - open  → 集合竞价价格
-        - high  → 盘中最高（可达 take_profit 检查）
-        - low   → 盘中最低（可达 stop_loss 检查）
+        - high  → 盘中最高（止盈检查）
+        - low   → 盘中最低（止损检查）
         - close → 收盘价（兜底退出价格）
 
+        A 股成交现实化：
+        - prev_close = 卖出日的前收（计算涨跌停价用）。正常 T+1 即买入日收盘价。
+        - 一字跌停 → 无法卖出，返回 stuck，回测器顺延持有到次日
+        - 一字涨停 → 同样无法卖出，stuck 顺延（不提前兑现浮盈，偏保守）
+        - 止盈/止损同日均触及 → ambiguous_pessimistic=True 时假设先触止损（杀乐观未来函数偏差）
+
         决策优先级（按时间顺序）：
-        1. 开盘涨>=5%  → 开盘价卖出（阶段1 止盈）
-        2. 开盘跌<=-2% → 开盘价卖出（阶段1 止损）
-        3. 涨停检查    → high 触及涨停价 → 收盘价卖出（持有到收盘）
-        4. 盘中 high 触及 +3% 且 low 触及 -2% → 用 open 位置判断先后
-        5. 盘中 high 触及 +3% → 以 buy_price*(1+3%) 止盈
-        6. 盘中 low  触及 -2% → 以 buy_price*(1-2%) 止损
-        7. 收盘盈利 > 0        → 收盘价卖出（锁利）
-        8. 收盘亏损 <= -1.5%   → 收盘价卖出（止损）
-        9. 兜底                → 收盘价卖出
+        0. 一字涨/跌停 → stuck（顺延）
+        1. 开盘涨>=止盈线 → 开盘价卖出（阶段1 止盈）
+        2. 开盘跌<=止损线 → 开盘价卖出（阶段1 止损）
+        3. high 触及涨停价 → 收盘价卖出（涨停持有到收盘）
+        4. 盘中 high 触止盈 且 low 触止损 → 悲观取止损（或按 open 位置）
+        5. 盘中 high 触止盈 → buy*(1+止盈) 卖出
+        6. 盘中 low  触止损 → buy*(1+止损) 卖出
+        7. 收盘盈利 > 0 → 收盘价卖出（锁利）
+        8. 收盘亏损 <= 观察期止损 → 收盘价卖出（止损）
+        9. 兜底 → 收盘价卖出
         """
+        # prev_close 缺省 = 买入价（正常 T+1：买入日收盘即卖出日前收）
+        if prev_close is None or prev_close <= 0:
+            prev_close = buy_price
+
+        # 阶段 0：一字板无法成交 → 顺延持有
+        if is_one_word_limit_down(next_open, next_high, next_low, next_close,
+                                  prev_close, self.limit_pct):
+            return SellDecision(
+                sell_price=0.0, sell_reason="stuck_limit_down",
+                pnl_pct=(next_close - buy_price) / buy_price, phase=0,
+                description="一字跌停无法卖出，顺延持有", stuck=True,
+            )
+        if is_one_word_limit_up(next_open, next_high, next_low, next_close,
+                                prev_close, self.limit_pct):
+            return SellDecision(
+                sell_price=0.0, sell_reason="stuck_limit_up",
+                pnl_pct=(next_close - buy_price) / buy_price, phase=0,
+                description="一字涨停无法卖出，顺延持有", stuck=True,
+            )
+
+        limit_up = limit_up_price(prev_close, self.limit_pct)
+        limit_down = limit_down_price(prev_close, self.limit_pct)
+
         open_pct = (next_open - buy_price) / buy_price
         high_pct = (next_high - buy_price) / buy_price
         low_pct = (next_low - buy_price) / buy_price
         close_pct = (next_close - buy_price) / buy_price
 
         # 阶段 1：集合竞价（9:25）
-        if open_pct >= self.phase1_take_profit:
-            return SellDecision(
-                sell_price=round(next_open, 2),
-                sell_reason="phase1_take_profit",
-                pnl_pct=open_pct,
-                phase=1,
-                description=f"高开{open_pct*100:.1f}%止盈",
-            )
+        # 开盘即跌停无买盘 → 不能在开盘价成交，跳过到盘中/收盘判定
+        if next_open > limit_down + 0.005:
+            if open_pct >= self.phase1_take_profit:
+                return SellDecision(
+                    sell_price=round(next_open, 2),
+                    sell_reason="phase1_take_profit",
+                    pnl_pct=open_pct,
+                    phase=1,
+                    description=f"高开{open_pct*100:.1f}%止盈",
+                )
+            if open_pct <= self.phase1_stop_loss:
+                return SellDecision(
+                    sell_price=round(next_open, 2),
+                    sell_reason="phase1_stop_loss",
+                    pnl_pct=open_pct,
+                    phase=1,
+                    description=f"低开{open_pct*100:.1f}%止损",
+                )
 
-        if open_pct <= self.phase1_stop_loss:
-            return SellDecision(
-                sell_price=round(next_open, 2),
-                sell_reason="phase1_stop_loss",
-                pnl_pct=open_pct,
-                phase=1,
-                description=f"低开{open_pct*100:.1f}%止损",
-            )
-
-        # 涨停检查（阶段 2 之前：涨停日持有到收盘）
-        if high_pct >= self.limit_up_pct:
+        # 涨停检查：盘中触及涨停价 → 持有到收盘
+        if next_high >= limit_up - 0.005:
+            # 收盘仍封死在涨停 → 无法卖出，顺延持有（不提前兑现，偏保守）
+            if next_close >= limit_up - 0.005:
+                return SellDecision(
+                    sell_price=0.0, sell_reason="stuck_limit_up_seal",
+                    pnl_pct=close_pct, phase=0,
+                    description=f"封板未开无法卖出，顺延（浮盈{close_pct*100:.1f}%）",
+                    stuck=True,
+                )
             return SellDecision(
                 sell_price=round(next_close, 2),
                 sell_reason="limit_up_hold",
                 pnl_pct=close_pct,
                 phase=2,
-                description=f"涨停持有，收盘{close_pct*100:.1f}%",
+                description=f"涨停回落，收盘{close_pct*100:.1f}%",
             )
 
-        # 阶段 2：早盘（9:30-9:45）— 检查盘中 high/low 是否触及止盈/止损
-        # 如果 high 和 low 同时触发，用 open 位置判断哪个先发生：
-        #   open 更接近 high → 可能先冲高再回落 → 先触发止盈
-        #   open 更接近 low  → 可能先下探再反弹 → 先触发止损
+        # 阶段 2：早盘 — 盘中 high/low 是否触及止盈/止损
+        # 同日双触：ambiguous_pessimistic=True → 假设先触止损（消除日线对路径的乐观偏差）
         if high_pct >= self.phase2_take_profit and low_pct <= self.phase2_stop_loss:
+            if self.ambiguous_pessimistic:
+                sell_price = round(buy_price * (1 + self.phase2_stop_loss), 2)
+                return SellDecision(
+                    sell_price=sell_price,
+                    sell_reason="phase2_stop_loss",
+                    pnl_pct=self.phase2_stop_loss,
+                    phase=2,
+                    description=f"双触取悲观：下探{self.phase2_stop_loss*100:.1f}%止损",
+                )
             if (next_open - next_low) > (next_high - next_open):
-                # open 更接近 high，先冲高 → 止盈
                 sell_price = round(buy_price * (1 + self.phase2_take_profit), 2)
                 return SellDecision(
                     sell_price=sell_price,
@@ -131,16 +188,14 @@ class SellEngineV2:
                     phase=2,
                     description=f"盘中冲高{self.phase2_take_profit*100:.1f}%止盈",
                 )
-            else:
-                # open 更接近 low，先下探 → 止损
-                sell_price = round(buy_price * (1 + self.phase2_stop_loss), 2)
-                return SellDecision(
-                    sell_price=sell_price,
-                    sell_reason="phase2_stop_loss",
-                    pnl_pct=self.phase2_stop_loss,
-                    phase=2,
-                    description=f"盘中下探{self.phase2_stop_loss*100:.1f}%止损",
-                )
+            sell_price = round(buy_price * (1 + self.phase2_stop_loss), 2)
+            return SellDecision(
+                sell_price=sell_price,
+                sell_reason="phase2_stop_loss",
+                pnl_pct=self.phase2_stop_loss,
+                phase=2,
+                description=f"盘中下探{self.phase2_stop_loss*100:.1f}%止损",
+            )
 
         if high_pct >= self.phase2_take_profit:
             sell_price = round(buy_price * (1 + self.phase2_take_profit), 2)

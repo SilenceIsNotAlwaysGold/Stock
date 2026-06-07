@@ -1,0 +1,501 @@
+/* ============================================================
+   Dark Professional Trading-Terminal Theme
+   Loaded AFTER element-plus dark css-vars so these win.
+   ============================================================ */
+
+:root {
+  --bg-base: #0b0e14;
+  --bg-surface: #11151c;
+  --bg-elevated: #161b24;
+  --bg-inset: #0d1117;
+
+  --border: #232a36;
+  --border-strong: #2f3947;
+
+  --text-1: #e6edf3;
+  --text-2: #9aa7b8;
+  --text-3: #5f6b7c;
+
+  --accent: #3ea6ff;
+  --accent-2: #2bd4c4;
+  --gold: #f0b429;
+
+  /* China convention: 红涨 / 绿跌 */
+  --up: #ff5c5c;
+  --down: #26d07c;
+}
+
+/* ---------- Element Plus dark var overrides ---------- */
+html.dark {
+  --el-bg-color: var(--bg-surface);
+  --el-bg-color-page: var(--bg-base);
+  --el-bg-color-overlay: var(--bg-elevated);
+
+  --el-text-color-primary: var(--text-1);
+  --el-text-color-regular: var(--text-1);
+  --el-text-color-secondary: var(--text-2);
+  --el-text-color-placeholder: var(--text-3);
+  --el-text-color-disabled: var(--text-3);
+
+  --el-border-color: var(--border);
+  --el-border-color-light: var(--border);
+  --el-border-color-lighter: var(--border);
+  --el-border-color-extra-light: var(--border);
+  --el-border-color-dark: var(--border-strong);
+  --el-border-color-darker: var(--border-strong);
+
+  --el-fill-color-blank: var(--bg-inset);
+  --el-fill-color: rgba(255, 255, 255, 0.04);
+  --el-fill-color-light: rgba(255, 255, 255, 0.04);
+  --el-fill-color-lighter: rgba(255, 255, 255, 0.03);
+  --el-fill-color-extra-light: rgba(255, 255, 255, 0.02);
+  --el-fill-color-dark: rgba(255, 255, 255, 0.06);
+  --el-fill-color-darker: rgba(255, 255, 255, 0.08);
+
+  --el-color-primary: var(--accent);
+  --el-color-primary-light-3: #5fb6ff;
+  --el-color-primary-light-5: #7fc4ff;
+  --el-color-primary-light-7: #9fd3ff;
+  --el-color-primary-light-8: #b0dbff;
+  --el-color-primary-light-9: rgba(62, 166, 255, 0.12);
+  --el-color-primary-dark-2: #2f8fe0;
+
+  --el-color-success: var(--down);
+  --el-color-danger: var(--up);
+  --el-color-error: var(--up);
+  --el-color-warning: var(--gold);
+  --el-color-info: var(--text-2);
+
+  --el-box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+  --el-box-shadow-light: 0 4px 16px rgba(0, 0, 0, 0.35);
+  --el-mask-color: rgba(8, 10, 14, 0.7);
+
+  color-scheme: dark;
+}
+
+/* ---------- Body / terminal backdrop ---------- */
+html, body, #app {
+  background: var(--bg-base);
+  color: var(--text-1);
+}
+
+body {
+  margin: 0;
+  background-color: var(--bg-base);
+  background-image:
+    radial-gradient(900px 600px at 78% -10%, rgba(62, 166, 255, 0.08), transparent 60%),
+    radial-gradient(700px 500px at 0% 100%, rgba(43, 212, 196, 0.05), transparent 55%),
+    linear-gradient(rgba(255, 255, 255, 0.015) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255, 255, 255, 0.015) 1px, transparent 1px);
+  background-size: 100% 100%, 100% 100%, 40px 40px, 40px 40px;
+  background-attachment: fixed;
+  font-feature-settings: 'tnum';
+  -webkit-font-smoothing: antialiased;
+}
+
+/* ---------- Cards ---------- */
+html.dark .el-card {
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  box-shadow: none;
+  transition: border-color 0.2s ease, box-shadow 0.2s ease, transform 0.2s ease;
+}
+html.dark .el-card:hover {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px rgba(62, 166, 255, 0.25), 0 10px 30px rgba(0, 0, 0, 0.45);
+}
+html.dark .el-card.is-always-shadow,
+html.dark .el-card.is-hover-shadow:focus,
+html.dark .el-card.is-hover-shadow:hover {
+  box-shadow: 0 0 0 1px rgba(62, 166, 255, 0.25), 0 10px 30px rgba(0, 0, 0, 0.45);
+}
+html.dark .el-card__header {
+  border-bottom: 1px solid var(--border);
+  color: var(--text-1);
+  font-weight: 600;
+  font-size: 14px;
+}
+
+/* ---------- Tables ---------- */
+html.dark .el-table {
+  background-color: transparent;
+  --el-table-bg-color: transparent;
+  --el-table-tr-bg-color: transparent;
+  --el-table-header-bg-color: var(--bg-inset);
+  --el-table-header-text-color: var(--text-2);
+  --el-table-text-color: var(--text-1);
+  --el-table-border-color: var(--border);
+  --el-table-row-hover-bg-color: rgba(62, 166, 255, 0.08);
+  --el-table-current-row-bg-color: rgba(62, 166, 255, 0.1);
+  --el-table-fixed-box-shadow: -6px 0 12px rgba(0, 0, 0, 0.4);
+}
+html.dark .el-table th.el-table__cell {
+  background-color: var(--bg-inset);
+  font-weight: 600;
+}
+html.dark .el-table td.el-table__cell,
+html.dark .el-table th.el-table__cell {
+  border-bottom: 1px solid var(--border);
+}
+html.dark .el-table--striped .el-table__body tr.el-table__row--striped td.el-table__cell {
+  background-color: rgba(255, 255, 255, 0.02);
+}
+html.dark .el-table__body tr:hover > td.el-table__cell {
+  background-color: rgba(62, 166, 255, 0.08) !important;
+}
+html.dark .el-table::before,
+html.dark .el-table--border::after,
+html.dark .el-table__inner-wrapper::before {
+  background-color: var(--border);
+}
+
+/* ---------- Buttons ---------- */
+html.dark .el-button {
+  background: transparent;
+  border: 1px solid var(--border-strong);
+  color: var(--text-1);
+  transition: all 0.18s ease;
+}
+html.dark .el-button:hover,
+html.dark .el-button:focus {
+  background: rgba(255, 255, 255, 0.05);
+  border-color: var(--accent);
+  color: var(--accent);
+}
+html.dark .el-button.is-text {
+  border-color: transparent;
+}
+html.dark .el-button--primary {
+  background: linear-gradient(180deg, #4cb0ff, #2f8fe0);
+  border: 1px solid rgba(62, 166, 255, 0.6);
+  color: #07121f;
+  font-weight: 600;
+  box-shadow: 0 2px 12px rgba(62, 166, 255, 0.25);
+}
+html.dark .el-button--primary:hover,
+html.dark .el-button--primary:focus {
+  background: linear-gradient(180deg, #62bcff, #3a9bef);
+  color: #07121f;
+  box-shadow: 0 4px 18px rgba(62, 166, 255, 0.4);
+}
+html.dark .el-button--success {
+  background: linear-gradient(180deg, #34e08c, #1fae6c);
+  border-color: rgba(38, 208, 124, 0.6);
+  color: #04140d;
+  font-weight: 600;
+}
+html.dark .el-button--danger {
+  background: linear-gradient(180deg, #ff7070, #e04545);
+  border-color: rgba(255, 92, 92, 0.6);
+  color: #1f0707;
+  font-weight: 600;
+}
+html.dark .el-button--warning {
+  background: linear-gradient(180deg, #ffc649, #d99a1c);
+  border-color: rgba(240, 180, 41, 0.6);
+  color: #1f1404;
+  font-weight: 600;
+}
+html.dark .el-button.is-disabled,
+html.dark .el-button.is-disabled:hover {
+  opacity: 0.45;
+  color: var(--text-3);
+}
+
+/* ---------- Inputs / Selects ---------- */
+html.dark .el-input__wrapper,
+html.dark .el-textarea__inner {
+  background-color: var(--bg-inset);
+  box-shadow: 0 0 0 1px var(--border) inset;
+  border-radius: 8px;
+}
+html.dark .el-input__wrapper:hover {
+  box-shadow: 0 0 0 1px var(--border-strong) inset;
+}
+html.dark .el-input__wrapper.is-focus,
+html.dark .el-textarea__inner:focus {
+  box-shadow: 0 0 0 1px var(--accent) inset, 0 0 0 3px rgba(62, 166, 255, 0.15);
+}
+html.dark .el-input__inner,
+html.dark .el-textarea__inner {
+  color: var(--text-1);
+}
+html.dark .el-select__wrapper {
+  background-color: var(--bg-inset);
+  box-shadow: 0 0 0 1px var(--border) inset;
+  border-radius: 8px;
+}
+html.dark .el-select__wrapper.is-focused {
+  box-shadow: 0 0 0 1px var(--accent) inset, 0 0 0 3px rgba(62, 166, 255, 0.15);
+}
+html.dark .el-select-dropdown,
+html.dark .el-popper {
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+}
+html.dark .el-select-dropdown__item.is-hovering,
+html.dark .el-select-dropdown__item:hover {
+  background: rgba(62, 166, 255, 0.1);
+}
+html.dark .el-select-dropdown__item.is-selected {
+  color: var(--accent);
+}
+html.dark .el-popper.is-light .el-popper__arrow::before {
+  background: var(--bg-elevated);
+  border-color: var(--border);
+}
+
+/* el-input-number — ensure value text visible */
+html.dark .el-input-number .el-input__inner {
+  color: var(--text-1) !important;
+}
+html.dark .el-input-number__decrease,
+html.dark .el-input-number__increase {
+  background: var(--bg-elevated);
+  color: var(--text-2);
+  border-color: var(--border);
+}
+html.dark .el-input-number__decrease:hover,
+html.dark .el-input-number__increase:hover {
+  color: var(--accent);
+}
+
+/* date-picker */
+html.dark .el-date-editor.el-input__wrapper,
+html.dark .el-range-editor.el-input__wrapper {
+  background-color: var(--bg-inset);
+  box-shadow: 0 0 0 1px var(--border) inset;
+}
+html.dark .el-picker-panel {
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  color: var(--text-1);
+}
+html.dark .el-date-table td.available:hover,
+html.dark .el-date-table td.current:not(.disabled) .el-date-table-cell__text {
+  color: var(--accent);
+}
+html.dark .el-date-table td.today .el-date-table-cell__text {
+  color: var(--accent);
+}
+
+/* ---------- Menu ---------- */
+html.dark .el-menu {
+  background: transparent;
+  border-right: none;
+}
+html.dark .el-menu-item,
+html.dark .el-sub-menu__title {
+  color: var(--text-2);
+}
+html.dark .el-menu-item:hover,
+html.dark .el-sub-menu__title:hover {
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--text-1);
+}
+html.dark .el-menu-item.is-active {
+  color: var(--accent);
+  background: rgba(62, 166, 255, 0.12);
+  position: relative;
+  text-shadow: 0 0 12px rgba(62, 166, 255, 0.5);
+}
+html.dark .el-menu-item.is-active::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 8px;
+  bottom: 8px;
+  width: 3px;
+  border-radius: 0 3px 3px 0;
+  background: var(--accent);
+  box-shadow: 0 0 10px rgba(62, 166, 255, 0.7);
+}
+
+/* ---------- Tabs ---------- */
+html.dark .el-tabs__item {
+  color: var(--text-2);
+}
+html.dark .el-tabs__item.is-active {
+  color: var(--accent);
+}
+html.dark .el-tabs__active-bar {
+  background-color: var(--accent);
+}
+html.dark .el-tabs__nav-wrap::after {
+  background-color: var(--border);
+}
+
+/* ---------- Tags ---------- */
+html.dark .el-tag {
+  border-color: transparent;
+}
+html.dark .el-tag--info {
+  --el-tag-bg-color: rgba(154, 167, 184, 0.14);
+  --el-tag-text-color: var(--text-2);
+}
+html.dark .el-tag.el-tag--success {
+  --el-tag-bg-color: rgba(38, 208, 124, 0.16);
+  --el-tag-text-color: var(--down);
+}
+html.dark .el-tag.el-tag--danger {
+  --el-tag-bg-color: rgba(255, 92, 92, 0.16);
+  --el-tag-text-color: var(--up);
+}
+html.dark .el-tag.el-tag--warning {
+  --el-tag-bg-color: rgba(240, 180, 41, 0.16);
+  --el-tag-text-color: var(--gold);
+}
+html.dark .el-tag--dark.el-tag--success { background: var(--down); color: #04140d; }
+html.dark .el-tag--dark.el-tag--danger { background: var(--up); color: #1f0707; }
+html.dark .el-tag--dark.el-tag--warning { background: var(--gold); color: #1f1404; }
+html.dark .el-tag--dark { background: var(--accent); color: #07121f; }
+
+/* ---------- Progress ---------- */
+html.dark .el-progress__text {
+  color: var(--text-1) !important;
+}
+html.dark .el-progress-bar__outer {
+  background-color: var(--bg-inset);
+}
+
+/* ---------- Empty ---------- */
+html.dark .el-empty__description p {
+  color: var(--text-3);
+}
+
+/* ---------- Dialog ---------- */
+html.dark .el-dialog {
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+}
+html.dark .el-dialog__title {
+  color: var(--text-1);
+}
+html.dark .el-overlay {
+  background-color: rgba(6, 8, 12, 0.72);
+}
+html.dark .el-message-box {
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+}
+html.dark .el-message-box__title,
+html.dark .el-message-box__content {
+  color: var(--text-1);
+}
+
+/* ---------- Switch ---------- */
+html.dark .el-switch__core {
+  background: var(--bg-inset);
+  border-color: var(--border-strong);
+}
+html.dark .el-switch.is-checked .el-switch__core {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
+/* ---------- Misc Element Plus ---------- */
+html.dark .el-pagination {
+  --el-pagination-bg-color: transparent;
+  --el-pagination-button-bg-color: var(--bg-inset);
+  color: var(--text-2);
+}
+html.dark .el-pagination button:disabled {
+  background: transparent;
+}
+html.dark .el-descriptions {
+  --el-descriptions-item-bordered-label-background: var(--bg-inset);
+  background: transparent;
+}
+html.dark .el-descriptions__body {
+  background: transparent;
+  color: var(--text-1);
+}
+html.dark .el-descriptions__cell {
+  border-color: var(--border) !important;
+}
+html.dark .el-alert {
+  border: 1px solid var(--border);
+}
+html.dark .el-alert--info {
+  background: rgba(154, 167, 184, 0.1);
+}
+html.dark .el-alert--error {
+  background: rgba(255, 92, 92, 0.12);
+}
+html.dark .el-alert--warning {
+  background: rgba(240, 180, 41, 0.12);
+}
+html.dark .el-alert--success {
+  background: rgba(38, 208, 124, 0.12);
+}
+html.dark .el-loading-mask {
+  background-color: rgba(11, 14, 20, 0.8);
+}
+html.dark .el-radio-button__inner {
+  background: var(--bg-inset);
+  border-color: var(--border);
+  color: var(--text-2);
+}
+html.dark .el-radio-button__original-radio:checked + .el-radio-button__inner {
+  background: rgba(62, 166, 255, 0.15);
+  border-color: var(--accent);
+  color: var(--accent);
+  box-shadow: -1px 0 0 0 var(--accent);
+}
+html.dark .el-form-item__label {
+  color: var(--text-2);
+}
+html.dark .el-divider {
+  border-color: var(--border);
+}
+html.dark .el-divider__text {
+  background: var(--bg-base);
+  color: var(--text-2);
+}
+html.dark .el-link {
+  color: var(--accent);
+}
+html.dark .el-statistic__head {
+  color: var(--text-2);
+}
+html.dark .el-statistic__content {
+  color: var(--text-1);
+}
+
+/* ---------- Scrollbar ---------- */
+html.dark ::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+html.dark ::-webkit-scrollbar-track {
+  background: var(--bg-base);
+}
+html.dark ::-webkit-scrollbar-thumb {
+  background: var(--border-strong);
+  border-radius: 4px;
+}
+html.dark ::-webkit-scrollbar-thumb:hover {
+  background: #3b4757;
+}
+html.dark * {
+  scrollbar-width: thin;
+  scrollbar-color: var(--border-strong) var(--bg-base);
+}
+
+/* ---------- Utility classes ---------- */
+.num {
+  font-variant-numeric: tabular-nums;
+  font-family: 'SF Mono', 'JetBrains Mono', ui-monospace, 'Menlo', monospace;
+}
+.up { color: var(--up); }
+.down { color: var(--down); }
+.gold { color: var(--gold); }
+.accent { color: var(--accent); }
+.muted { color: var(--text-2); }
+.glass {
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+}

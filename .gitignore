@@ -36,3 +36,6 @@ frontend/dist/
 pg_data/
 mongo_data/
 redis_data/
+
+# Claude Code 本地状态/配置
+.claude/

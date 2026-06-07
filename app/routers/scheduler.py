@@ -87,6 +87,11 @@ SCHEDULED_TASKS = {
         "cron": "30 10 * * 1-5",
         "description": "每个交易日 10:30 执行T+1超时卖出规则",
     },
+    "daily_push": {
+        "name": "每日推送",
+        "cron": "30 8 * * 1-5",
+        "description": "每个交易日 8:30 推送板块推荐 + T1 候选到飞书/钉钉",
+    },
 }
 
 
@@ -179,6 +184,8 @@ async def _execute_task(task_id: str):
         async with async_session() as db:
             result = await check_and_sell_positions(db)
             logger.info(f"T1 morning sell completed: {len(result)} positions sold")
+    elif task_id == "daily_push":
+        await _job_daily_push()
     else:
         logger.warning(f"Unknown task: {task_id}")
 
@@ -227,6 +234,89 @@ async def _job_paper_settlement():
             logger.info(f"paper_settlement: 处理 {len(results)} 笔卖出")
     except Exception as e:
         logger.error(f"paper_settlement 失败: {e}")
+
+
+async def _job_daily_push():
+    """每日推送：板块推荐 + T1 候选 + 市场情绪 → 飞书/钉钉"""
+    from app.config import settings as _s
+
+    logger.info("定时任务: daily_push 开始")
+    if not _s.NOTIFY_DAILY_PUSH:
+        logger.info("daily_push: NOTIFY_DAILY_PUSH=false，跳过")
+        return
+    if not (_s.FEISHU_WEBHOOK or _s.DINGTALK_WEBHOOK):
+        logger.warning("daily_push: 未配置任何 webhook，跳过")
+        return
+
+    try:
+        # 1. 板块推荐
+        from engine.sector_heat.heat_scorer import rank_sectors
+        from engine.sector_heat.stock_picker import pick_stocks
+        from engine.sector_heat.llm_analyst import analyze_sectors
+
+        sectors = await rank_sectors(window_days=5, top_n=3)
+        analyses = await analyze_sectors(sectors, window_days=5)
+
+        sector_recs = []
+        for s in sectors:
+            stocks = await pick_stocks(s, max_stocks=2)
+            an = analyses.get(s.name)
+            sector_recs.append({
+                "sector": {
+                    "name": s.name,
+                    "heat_score": s.heat_score,
+                    "leader_stock": s.leader_stock,
+                    "stats": {
+                        "period_return_pct": s.period_return,
+                        "net_inflow_bn": s.net_inflow,
+                    },
+                },
+                "analysis": {
+                    "catalyst": an.catalyst, "pick_direction": an.pick_direction,
+                } if an else None,
+            })
+
+        # 2. T1 候选
+        from datetime import date as _d
+        from sqlalchemy import select
+        from app.core.database import async_session
+        from app.models.pg_models import T1Candidate
+
+        async with async_session() as db:
+            r = await db.execute(
+                select(T1Candidate)
+                .where(T1Candidate.scan_date == _d.today())
+                .order_by(T1Candidate.score.desc())
+                .limit(5)
+            )
+            cand_objs = r.scalars().all()
+            t1_cands = [
+                {
+                    "stock_name": c.stock_name,
+                    "ts_code": c.ts_code,
+                    "score": float(c.score or 0),
+                    "suggested_pct": float(c.suggested_pct) if c.suggested_pct else None,
+                }
+                for c in cand_objs
+            ]
+
+        # 3. 市场情绪
+        emotion = None
+        try:
+            from app.routers.emotion import _calculate_emotion
+            emotion = await _calculate_emotion()
+        except Exception as e:
+            logger.debug(f"获取情绪失败: {e}")
+
+        # 4. 推送
+        from app.services.notifier import format_daily_brief, send_to_all
+
+        text = format_daily_brief(sector_recs, t1_cands, emotion)
+        result = await send_to_all(text)
+        logger.info(f"daily_push 完成: {result}")
+    except Exception as e:
+        logger.error(f"daily_push 失败: {e}")
+        import traceback; logger.debug(traceback.format_exc())
 
 
 def init_scheduler(app):

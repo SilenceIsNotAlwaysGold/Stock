@@ -29,7 +29,7 @@ const CRITERION_LABELS: Record<string, string> = {
 function renderChart() {
   if (!chartRef.value || !props.data.length) return
   if (!chart) {
-    chart = echarts.init(chartRef.value)
+    chart = echarts.init(chartRef.value, 'quant')
   }
 
   const names = props.data.map(d => CRITERION_LABELS[d.criterion] || d.criterion)

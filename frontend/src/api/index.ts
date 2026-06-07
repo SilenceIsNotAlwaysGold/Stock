@@ -28,7 +28,7 @@ export const analysisApi = {
 }
 
 export const recommendApi = {
-  today: (top_n = 10) => get('/recommend/today', { top_n }),
+  today: (top_n = 20, refresh = false) => get('/recommend/today', { top_n, refresh }),
   history: (date = '') => get('/recommend/history', { date }),
 }
 

@@ -26,7 +26,7 @@ function renderChart() {
   if (!chartRef.value || !props.data?.length) return
 
   if (!chart) {
-    chart = echarts.init(chartRef.value)
+    chart = echarts.init(chartRef.value, 'quant')
   }
 
   const dates = props.data.map((d) => d.trade_date)
@@ -68,10 +68,10 @@ function renderChart() {
         xAxisIndex: 0,
         yAxisIndex: 0,
         itemStyle: {
-          color: '#ef5350',
-          color0: '#26a69a',
-          borderColor: '#ef5350',
-          borderColor0: '#26a69a',
+          color: '#ff5c5c',
+          color0: '#26d07c',
+          borderColor: '#ff5c5c',
+          borderColor0: '#26d07c',
         },
       },
       { name: 'MA5', type: 'line', data: ma(5), smooth: true, lineStyle: { width: 1 }, symbol: 'none' },
@@ -86,7 +86,7 @@ function renderChart() {
         itemStyle: {
           color: (params: any) => {
             const d = props.data[params.dataIndex]
-            return d.close >= d.open ? '#ef5350' : '#26a69a'
+            return d.close >= d.open ? '#ff5c5c' : '#26d07c'
           },
         },
       },

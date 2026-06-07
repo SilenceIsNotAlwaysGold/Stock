@@ -1,14 +1,21 @@
 """市场情绪指标 API"""
 
 import logging
-from datetime import datetime, timedelta
+from collections import defaultdict
+from datetime import date, datetime, timedelta
 from typing import Dict, List
 
-from fastapi import APIRouter, Query
+import pandas as pd
+from fastapi import APIRouter, Depends, Query
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
+from app.core.database import get_db
+from app.models.pg_models import DailyBar
 from dataflows.source_manager import DataSourceManager
 from dataflows.providers import TushareProvider, AKShareProvider, BaoStockProvider
+from engine.emotion_cycle import compute_emotion
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -32,6 +39,58 @@ async def today_emotion():
 async def emotion_history(days: int = Query(30, ge=1, le=365)):
     """获取历史情绪数据"""
     return list(_emotion_cache.values())[-days:]
+
+
+@router.get("/cycle")
+async def emotion_cycle(
+    start_date: str = Query("2026-02-11"),
+    end_date: str = Query("2026-04-24"),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    全市场情绪周期序列（涨停数/炸板率/连板高度/晋级率/赚钱效应 → 相位+gate）。
+
+    A 股短线最大 edge：冰点空仓、高潮放大。无未来函数（每日仅用 ≤T 截面）。
+    """
+    result = await db.execute(
+        select(DailyBar.ts_code, DailyBar.trade_date, DailyBar.open,
+               DailyBar.high, DailyBar.low, DailyBar.close)
+        .where(DailyBar.trade_date >= date.fromisoformat(start_date))
+        .where(DailyBar.trade_date <= date.fromisoformat(end_date))
+        .order_by(DailyBar.ts_code, DailyBar.trade_date)
+    )
+    rows = result.all()
+    if not rows:
+        return {"error": "无日线数据", "series": []}
+
+    from engine.fast_index import build_fast_index
+
+    by_code = defaultdict(list)
+    for r in rows:
+        by_code[r.ts_code].append({
+            "date": str(r.trade_date),
+            "open": float(r.open or 0), "high": float(r.high or 0),
+            "low": float(r.low or 0), "close": float(r.close or 0),
+        })
+    all_daily = {c: pd.DataFrame(v) for c, v in by_code.items()}
+    idx = build_fast_index(all_daily)
+    dates_set = set()
+    for e in idx.values():
+        dates_set.update(e["dnorm"])
+
+    series = []
+    for dn in sorted(dates_set):
+        e = compute_emotion(idx, dn)
+        series.append({
+            "date": dn, "score": e.score, "phase": e.phase, "gate": e.gate,
+            "limit_up": e.limit_up, "limit_down": e.limit_down,
+            "broken_rate": e.broken_rate, "max_consecutive": e.max_consecutive,
+            "advance_rate": e.advance_rate, "money_effect": e.money_effect,
+            "note": e.note,
+        })
+    latest = series[-1] if series else None
+    return {"period": f"{start_date} ~ {end_date}", "latest": latest,
+            "count": len(series), "series": series}
 
 
 async def _calculate_emotion() -> Dict:

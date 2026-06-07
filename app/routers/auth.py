@@ -1,12 +1,12 @@
-"""JWT 用户认证"""
+"""JWT 用户认证（基于 python-jose 签名 token，重启不失效）"""
 
 import hashlib
 import logging
-import time
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Dict, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request
+from jose import JWTError, jwt
 from pydantic import BaseModel
 
 from app.config import settings
@@ -14,11 +14,11 @@ from app.config import settings
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
-# JWT 简易实现（生产环境用 python-jose）
 JWT_SECRET = settings.JWT_SECRET
+JWT_ALGORITHM = "HS256"
 JWT_EXPIRE_HOURS = 24
 
-# 内存用户存储
+# 内存用户存储（仅 admin demo）
 _users: Dict[str, Dict] = {}
 
 # 演示账户（仅开发环境）
@@ -30,9 +30,6 @@ if settings.APP_ENV == "development":
         "created_at": datetime.now().isoformat(),
     }
     logger.info("Development mode: demo account 'admin' created")
-
-# 活跃 token
-_tokens: Dict[str, Dict] = {}
 
 
 class LoginRequest(BaseModel):
@@ -50,26 +47,26 @@ def _hash_password(password: str) -> str:
 
 
 def _generate_token(username: str) -> str:
-    import secrets
-
-    token = secrets.token_urlsafe(32)
-    _tokens[token] = {
-        "username": username,
-        "created_at": time.time(),
-        "expires_at": time.time() + JWT_EXPIRE_HOURS * 3600,
+    """签名 JWT，重启不失效"""
+    now = datetime.now(timezone.utc)
+    payload = {
+        "sub": username,
+        "iat": int(now.timestamp()),
+        "exp": int((now + timedelta(hours=JWT_EXPIRE_HOURS)).timestamp()),
     }
-    return token
+    return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGORITHM)
 
 
 def verify_token(token: str) -> Optional[Dict]:
-    """验证 token"""
-    info = _tokens.get(token)
-    if not info:
+    """验证 JWT 签名 + 过期时间"""
+    try:
+        payload = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
+        username = payload.get("sub")
+        if not username:
+            return None
+        return {"username": username, "expires_at": payload.get("exp", 0)}
+    except JWTError:
         return None
-    if time.time() > info["expires_at"]:
-        del _tokens[token]
-        return None
-    return info
 
 
 async def get_current_user(request: Request) -> Dict:
@@ -148,7 +145,6 @@ async def refresh_token(request: Request):
     if not info:
         raise HTTPException(401, "Token 已过期")
 
-    # 删除旧 token，生成新 token
-    del _tokens[old_token]
+    # JWT 自包含，旧 token 在 exp 内仍可用；签发新 token 即可
     new_token = _generate_token(info["username"])
     return {"token": new_token, "expires_in": JWT_EXPIRE_HOURS * 3600}
